@@ -13,6 +13,8 @@ Route::middleware('auth')->group(function () {
     Route::post('/chat/send', [ChatController::class, 'send']);
 
     Route::post('/chat/conversation', [ChatController::class, 'storeConversation']);
+
+    Route::delete('/chat/conversation/{id}', [ChatController::class, 'deleteConversation']);
 });
 
 require __DIR__.'/settings.php';

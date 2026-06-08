@@ -28,6 +28,22 @@ class SimpleAskService
         );
     }
 
+    public function generateTitle(string $message): string
+{
+    $response = $this->sendMessage(
+        messages: [
+            [
+                'role' => 'user',
+                'content' => "Génère un titre très court (maximum 5 mots) pour cette conversation. Réponds uniquement par le titre.\n\n{$message}"
+            ]
+        ],
+        model: self::DEFAULT_MODEL,
+        temperature: 0.2
+    );
+
+    return trim(str_replace('"', '', $response));
+}
+
     public function getModels(): array
     {
         return cache()->remember(
