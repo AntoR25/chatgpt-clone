@@ -12,6 +12,7 @@ class Message extends Model
         'parent_message_id',
         'role',
         'content',
+        'model',
         'token_count',
         'cost',
     ];

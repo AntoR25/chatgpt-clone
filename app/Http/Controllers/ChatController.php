@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class ChatController extends Controller
 {
@@ -75,6 +76,7 @@ class ChatController extends Controller
         $request->validate([
             'message' => ['required', 'string'],
             'conversation_id' => ['required', 'integer'],
+            'model' => ['nullable', 'string'],
         ]);
 
         $conversation = Conversation::where('id', $request->conversation_id)
@@ -90,6 +92,9 @@ class ChatController extends Controller
         $user = Auth::user();
         $originalMessage = $request->message;
         $messageText = $originalMessage;
+
+        // Recuperer le modele prefere de l'utilisateur ou celui passe dans la requete
+        $model = $request->input('model', $user->preferred_model ?? 'openai/gpt-4o-mini');
 
         // Decoder les commandes depuis JSON
         $userCommands = $this->decodeCommands($user->ai_commands);
@@ -119,6 +124,7 @@ class ChatController extends Controller
                 'conversation_id' => $conversation->id,
                 'role' => 'assistant',
                 'content' => $helpMessage,
+                'model' => $model,
             ]);
             
             return response()->json([
@@ -134,6 +140,7 @@ class ChatController extends Controller
                 'conversation_id' => $conversation->id,
                 'role' => 'assistant',
                 'content' => $commandsMessage,
+                'model' => $model,
             ]);
             
             return response()->json([
@@ -147,6 +154,7 @@ class ChatController extends Controller
             'conversation_id' => $conversation->id,
             'role' => 'user',
             'content' => $messageText,
+            'model' => null,
         ]);
 
         // 4. Auto title
@@ -166,21 +174,22 @@ class ChatController extends Controller
             ])
             ->toArray();
 
-        // 6. Injection du profil utilisateur
+        // 6. Injection du profil utilisateur (CORRIGE)
         $systemPrompt = $this->buildSystemPrompt($user, $userCommands);
+        
         array_unshift($messages, [
             'role' => 'system',
             'content' => $systemPrompt
         ]);
 
-        // 7. OpenRouter request
+        // 7. OpenRouter request avec le modele selectionne
         $response = Http::withHeaders([
             'Authorization' => 'Bearer ' . env('OPENROUTER_API_KEY'),
             'Content-Type' => 'application/json',
             'HTTP-Referer' => config('app.url'),
             'X-Title' => config('app.name'),
         ])->post('https://openrouter.ai/api/v1/chat/completions', [
-            'model' => 'openai/gpt-4o-mini',
+            'model' => $model,
             'messages' => $messages,
             'temperature' => 0.7,
         ]);
@@ -196,11 +205,12 @@ class ChatController extends Controller
         $answer = $response->json('choices.0.message.content')
             ?? 'Desole, je n\'ai pas pu generer une reponse.';
 
-        // 9. Save assistant message
+        // 9. Save assistant message avec le modele utilise
         Message::create([
             'conversation_id' => $conversation->id,
             'role' => 'assistant',
             'content' => $answer,
+            'model' => $model,
         ]);
 
         return response()->json([
@@ -278,41 +288,36 @@ class ChatController extends Controller
     }
 
     /**
-     * Construire le system prompt avec le profil utilisateur
+     * Construire le system prompt avec le profil utilisateur (CORRIGE)
      */
     private function buildSystemPrompt(User $user, array $userCommands): string
     {
-        $systemPrompt = "Tu es un assistant IA utile et precis.";
+        // Commencer avec le role de base
+        $systemPrompt = "Tu es un assistant IA utile et precis.\n\n";
         
+        // Ajouter les commandes personnalisees si elles existent
         if (!empty($userCommands)) {
-            $systemPrompt .= "\n\nCommandes disponibles :\n";
+            $systemPrompt .= "=== COMMANDES DISPONIBLES ===\n";
             foreach ($userCommands as $cmd => $instruction) {
                 $systemPrompt .= "- {$cmd}: {$instruction}\n";
             }
-            $systemPrompt .= "\nQuand l'utilisateur utilise ces commandes, reponds en consequence.\n";
+            $systemPrompt .= "\n";
         }
-
-        if ($user->ai_about || $user->ai_behavior) {
-            $systemPrompt = "";
-            
-            if ($user->ai_about) {
-                $systemPrompt .= "A propos de l'utilisateur :\n" . $user->ai_about . "\n\n";
-            }
-            
-            if ($user->ai_behavior) {
-                $systemPrompt .= "Comportement attendu :\n" . $user->ai_behavior . "\n\n";
-            }
-            
-            if (!empty($userCommands)) {
-                $systemPrompt .= "Commandes personnalisees :\n";
-                foreach ($userCommands as $cmd => $instruction) {
-                    $systemPrompt .= "- {$cmd}: {$instruction}\n";
-                }
-                $systemPrompt .= "\n";
-            }
-            
-            $systemPrompt .= "Adapte tes reponses en fonction de ces informations.";
+        
+        // Ajouter le profil utilisateur (AI ABOUT)
+        if ($user->ai_about && !empty(trim($user->ai_about))) {
+            $systemPrompt .= "=== PROFIL DE L'UTILISATEUR ===\n";
+            $systemPrompt .= $user->ai_about . "\n\n";
         }
+        
+        // Ajouter le comportement attendu (AI BEHAVIOR)
+        if ($user->ai_behavior && !empty(trim($user->ai_behavior))) {
+            $systemPrompt .= "=== COMPORTEMENT ATTENDU ===\n";
+            $systemPrompt .= $user->ai_behavior . "\n\n";
+        }
+        
+        // Instruction finale
+        $systemPrompt .= "Adapte tes reponses en fonction de ces informations. Sois utile et precis.";
         
         return $systemPrompt;
     }

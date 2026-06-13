@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { router } from '@inertiajs/vue3'
 
 const props = defineProps({
@@ -16,6 +16,106 @@ const loading = ref(false)
 const showDeleteModal = ref(false)
 const conversationToDelete = ref(null)
 const showCommands = ref(false)
+const showModelSelector = ref(false)
+
+// Modeles qui fonctionnent sur OpenRouter
+const models = [
+    { 
+        id: 'openai/gpt-4o-mini', 
+        name: 'GPT-4o Mini', 
+        provider: 'OpenAI',
+        description: 'Rapide, efficace et pas cher'
+    },
+    { 
+        id: 'openai/gpt-4o', 
+        name: 'GPT-4o', 
+        provider: 'OpenAI',
+        description: 'Plus puissant, bon pour les taches complexes'
+    },
+    { 
+        id: 'openai/gpt-3.5-turbo', 
+        name: 'GPT-3.5 Turbo', 
+        provider: 'OpenAI',
+        description: 'Le moins cher, rapide pour les reponses simples'
+    }
+]
+
+const selectedModel = ref('openai/gpt-4o-mini')
+
+/**
+ * Sauvegarder le modele prefere de l'utilisateur
+ */
+const savePreferredModel = async (modelId) => {
+    try {
+        const response = await fetch('/user/ai-profile', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+            },
+            body: JSON.stringify({
+                preferred_model: modelId
+                // Ne pas envoyer ai_about, ai_behavior, ai_commands
+            })
+        })
+        
+        if (!response.ok) {
+            throw new Error('Erreur sauvegarde')
+        }
+    } catch (err) {
+        console.error('Erreur sauvegarde modele:', err)
+    }
+}
+
+
+/**
+ * Charger le modele prefere depuis le serveur
+ */
+const loadPreferredModel = async () => {
+    try {
+        const response = await fetch('/user/ai-profile')
+        const data = await response.json()
+        if (data.preferred_model && models.some(m => m.id === data.preferred_model)) {
+            selectedModel.value = data.preferred_model
+        }
+    } catch (err) {
+        console.error('Erreur chargement modele:', err)
+    }
+}
+
+/**
+ * Selectionner un modele (ne touche pas aux instructions perso)
+ */
+const selectModel = async (modelId) => {
+    selectedModel.value = modelId
+    showModelSelector.value = false
+    await savePreferredModel(modelId)
+}
+
+/**
+ * Toggle modele selector
+ */
+const toggleModelSelector = () => {
+    showModelSelector.value = !showModelSelector.value
+}
+
+/**
+ * Infos du modele selectionne
+ */
+const getSelectedModelInfo = () => {
+    return models.find(m => m.id === selectedModel.value) || models[0]
+}
+
+/**
+ * Obtenir le nom du modele pour un message (si disponible)
+ */
+const getMessageModelName = (message) => {
+    if (message.model) {
+        const model = models.find(m => m.id === message.model)
+        return model ? model.name : message.model.split('/').pop()
+    }
+    return null
+}
 
 /**
  * ACTIVE CONVERSATION SAFE
@@ -46,19 +146,7 @@ const toggleCommands = () => {
 }
 
 /**
- * INSERT COMMANDE DANS LE MESSAGE
- */
-const insertCommand = (command) => {
-    message.value = command + ' '
-    showCommands.value = false
-    nextTick(() => {
-        const input = document.querySelector('input[type="text"]')
-        input?.focus()
-    })
-}
-
-/**
- * CREATE CONVERSATION (DB ONLY - IMPORTANT FIX)
+ * CREATE CONVERSATION
  */
 const newConversation = async () => {
     try {
@@ -206,7 +294,8 @@ const sendMessage = async () => {
 
     conv.messages.push({
         role: 'user',
-        content: text
+        content: text,
+        model: null
     })
 
     loading.value = true
@@ -224,7 +313,8 @@ const sendMessage = async () => {
             },
             body: JSON.stringify({
                 message: text,
-                conversation_id: activeId.value
+                conversation_id: activeId.value,
+                model: selectedModel.value
             })
         })
 
@@ -241,7 +331,8 @@ const sendMessage = async () => {
 
         conv.messages.push({
             role: 'assistant',
-            content: data.answer ?? 'Reponse vide'
+            content: data.answer ?? 'Reponse vide',
+            model: selectedModel.value  // Sauvegarde le modele utilise
         })
 
         await nextTick()
@@ -257,7 +348,8 @@ const sendMessage = async () => {
     } catch (err) {
         conv.messages.push({
             role: 'assistant',
-            content: 'Erreur: ' + err.message
+            content: 'Erreur: ' + err.message,
+            model: null
         })
     }
 
@@ -266,24 +358,81 @@ const sendMessage = async () => {
     await nextTick()
     scrollToBottom()
 }
+
+onMounted(() => {
+    loadPreferredModel()
+})
 </script>
 
 <template>
 <div class="flex h-screen bg-gray-50">
 
     <!-- SIDEBAR -->
-    <aside class="w-72 bg-white border-r border-gray-200 flex flex-col">
-        <div class="p-4 border-b border-gray-200 space-y-2">
+    <aside class="w-80 bg-white border-r border-gray-200 flex flex-col">
+        <div class="p-4 border-b border-gray-200">
             <button
                 @click="newConversation"
-                class="w-full bg-gray-900 text-white px-4 py-2 rounded-md hover:bg-gray-800 transition-all duration-200 text-sm font-medium"
+                class="w-full bg-gray-900 text-white px-4 py-2.5 rounded-lg hover:bg-gray-800 transition-all duration-200 text-sm font-medium"
             >
                 + Nouvelle conversation
             </button>
-            
+        </div>
+
+        <!-- Selection du modele -->
+        <div class="p-4 border-b border-gray-200">
+            <div class="relative">
+                <button
+                    @click="toggleModelSelector"
+                    class="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 transition-all duration-200 text-sm"
+                >
+                    <div class="flex items-center gap-2">
+                        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                        </svg>
+                        <div class="text-left">
+                            <div class="text-gray-700 font-medium">{{ getSelectedModelInfo().name }}</div>
+                            <div class="text-xs text-gray-500">{{ getSelectedModelInfo().provider }}</div>
+                        </div>
+                    </div>
+                    <svg class="w-4 h-4 text-gray-500 transition-transform" :class="showModelSelector ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </button>
+
+                <!-- Dropdown modeles -->
+                <div v-if="showModelSelector" class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20">
+                    <div class="py-1">
+                        <button
+                            v-for="model in models"
+                            :key="model.id"
+                            @click="selectModel(model.id)"
+                            class="w-full text-left px-3 py-3 hover:bg-gray-50 transition-all duration-200 border-b border-gray-100 last:border-0"
+                            :class="selectedModel === model.id ? 'bg-gray-50' : ''"
+                        >
+                            <div class="flex items-center justify-between">
+                                <div class="flex-1">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-sm font-medium text-gray-900">{{ model.name }}</span>
+                                        <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">{{ model.provider }}</span>
+                                    </div>
+                                    <div class="text-xs text-gray-500 mt-1">{{ model.description }}</div>
+                                </div>
+                                <div v-if="selectedModel === model.id" class="text-green-600 ml-3">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                                    </svg>
+                                </div>
+                            </div>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="p-4 border-b border-gray-200">
             <button
                 @click="goToAiSettings"
-                class="w-full bg-gray-100 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-200 transition-all duration-200 text-sm font-medium flex items-center justify-center gap-2"
+                class="w-full bg-gray-100 text-gray-700 px-4 py-2.5 rounded-lg hover:bg-gray-200 transition-all duration-200 text-sm font-medium flex items-center justify-center gap-2"
             >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
@@ -302,7 +451,7 @@ const sendMessage = async () => {
                 >
                     <div
                         @click="switchConversation(c.id)"
-                        class="flex items-center justify-between p-3 rounded-md cursor-pointer transition-all duration-200"
+                        class="flex items-center justify-between p-3 rounded-lg cursor-pointer transition-all duration-200"
                         :class="c.id === activeId 
                             ? 'bg-gray-100' 
                             : 'hover:bg-gray-50'"
@@ -365,14 +514,15 @@ const sendMessage = async () => {
         >
             <div v-if="!activeConversation" class="flex items-center justify-center h-full">
                 <div class="text-center">
-                    <p class="text-gray-500">Cree une conversation 👈</p>
+                    <p class="text-gray-500">Cree une conversation</p>
                 </div>
             </div>
 
             <div v-else-if="messages.length === 0" class="flex items-center justify-center h-full">
                 <div class="text-center">
                     <p class="text-gray-500">Envoie un message pour commencer</p>
-                    <p class="text-xs text-gray-400 mt-2">Astuce: utilise /help pour voir les commandes</p>
+                    <p class="text-xs text-gray-400 mt-2">Modele actuel: {{ getSelectedModelInfo().name }} ({{ getSelectedModelInfo().provider }})</p>
+                    <p class="text-xs text-gray-400">Astuce: utilise /help pour voir les commandes</p>
                 </div>
             </div>
 
@@ -385,7 +535,7 @@ const sendMessage = async () => {
                     <div :class="m.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
                         <div class="max-w-xl">
                             <div class="text-xs text-gray-500 mb-1 px-2">
-                                {{ m.role === 'user' ? 'Vous' : 'Assistant' }}
+                                {{ m.role === 'user' ? 'Vous' : (getMessageModelName(m) || getSelectedModelInfo().name) }}
                             </div>
                             <div
                                 class="px-4 py-2 rounded-lg whitespace-pre-wrap text-sm"
@@ -405,7 +555,7 @@ const sendMessage = async () => {
 
             <div v-if="loading" class="flex justify-start mt-4 animate-fade-in">
                 <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-sm text-gray-500">
-                    Reflechit...
+                    {{ getSelectedModelInfo().name }} reflechit...
                 </div>
             </div>
         </div>
@@ -418,14 +568,14 @@ const sendMessage = async () => {
                         v-model="message"
                         @keyup.enter="sendMessage"
                         type="text"
-                        class="w-full px-4 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent text-sm placeholder-gray-400"
+                        class="w-full px-4 py-2.5 bg-white text-gray-900 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent text-sm placeholder-gray-400"
                         :disabled="loading || !activeId"
                         placeholder="Pose une question... ou utilise /help"
                     />
                 </div>
                 <button
                     @click="sendMessage"
-                    class="px-4 py-2 bg-gray-900 text-white rounded-md hover:bg-gray-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+                    class="px-5 py-2.5 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
                     :disabled="loading || !activeId"
                 >
                     Envoyer
@@ -433,7 +583,7 @@ const sendMessage = async () => {
             </div>
             
             <!-- Commandes Panel -->
-            <div v-if="showCommands" class="mt-3 p-3 bg-gray-50 rounded-md border border-gray-200 animate-fade-in">
+            <div v-if="showCommands" class="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200 animate-fade-in">
                 <div class="text-xs text-gray-600 mb-2">Commandes disponibles:</div>
                 <div class="grid grid-cols-2 gap-2 text-xs">
                     <div class="font-mono text-blue-600">/help</div>
@@ -467,13 +617,13 @@ const sendMessage = async () => {
                 <div class="flex gap-3">
                     <button
                         @click="deleteConversation"
-                        class="flex-1 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-all duration-200 text-sm font-medium"
+                        class="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all duration-200 text-sm font-medium"
                     >
                         Supprimer
                     </button>
                     <button
                         @click="cancelDelete"
-                        class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-all duration-200 text-sm font-medium"
+                        class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-all duration-200 text-sm font-medium"
                     >
                         Annuler
                     </button>
