@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Http;
@@ -26,7 +27,7 @@ class ChatController extends Controller
     }
 
     /**
-     * Créer une conversation
+     * Creer une conversation
      */
     public function storeConversation()
     {
@@ -42,35 +43,32 @@ class ChatController extends Controller
         ]);
     }
 
-    public function deleteConversation($id)
-{
-    $conversation = Conversation::where('id', $id)
-        ->where('user_id', Auth::id())
-        ->first();
+    /**
+     * Supprimer une conversation
+     */
+    public function deleteConversation(int $id)
+    {
+        $conversation = Conversation::where('id', $id)
+            ->where('user_id', Auth::id())
+            ->first();
 
-    if (! $conversation) {
+        if (! $conversation) {
+            return response()->json([
+                'message' => 'Conversation introuvable',
+            ], 404);
+        }
+
+        Message::where('conversation_id', $conversation->id)->delete();
+        $conversation->delete();
+
         return response()->json([
-            'message' => 'Conversation introuvable',
-        ], 404);
+            'message' => 'Conversation supprimée',
+            'id' => $id,
+        ]);
     }
 
     /**
-     * Delete messages first (important si pas cascade DB)
-     */
-    Message::where('conversation_id', $conversation->id)->delete();
-
-    /**
-     * Delete conversation
-     */
-    $conversation->delete();
-
-    return response()->json([
-        'message' => 'Conversation supprimée',
-        'id' => $id,
-    ]);
-}
-    /**
-     * Envoyer message + OpenRouter
+     * Envoyer message + OpenRouter avec instructions personnalisees
      */
     public function send(Request $request)
     {
@@ -89,31 +87,76 @@ class ChatController extends Controller
             ], 404);
         }
 
-        /**
-         * 1. Save user message
-         */
+        $user = Auth::user();
+        $originalMessage = $request->message;
+        $messageText = $originalMessage;
+
+        // Decoder les commandes depuis JSON
+        $userCommands = $this->decodeCommands($user->ai_commands);
+
+        // 1. Gestion des commandes personnalisees
+        if (str_starts_with($messageText, '/')) {
+            $parts = explode(' ', $messageText, 2);
+            $cmdName = $parts[0];
+            $cmdArgs = $parts[1] ?? '';
+            
+            if (isset($userCommands[$cmdName])) {
+                $commandInstruction = $userCommands[$cmdName];
+                
+                if (! empty($cmdArgs)) {
+                    $messageText = $commandInstruction . "\n\n" . $cmdArgs;
+                } else {
+                    $messageText = $commandInstruction;
+                }
+            }
+        }
+
+        // 2. Commandes natives
+        if ($messageText === '/help' || $messageText === '/aide') {
+            $helpMessage = $this->getHelpMessage($userCommands);
+            
+            Message::create([
+                'conversation_id' => $conversation->id,
+                'role' => 'assistant',
+                'content' => $helpMessage,
+            ]);
+            
+            return response()->json([
+                'answer' => $helpMessage,
+                'conversation_title' => $conversation->title,
+            ]);
+        }
+        
+        if ($messageText === '/commands') {
+            $commandsMessage = $this->getCommandsList($userCommands);
+            
+            Message::create([
+                'conversation_id' => $conversation->id,
+                'role' => 'assistant',
+                'content' => $commandsMessage,
+            ]);
+            
+            return response()->json([
+                'answer' => $commandsMessage,
+                'conversation_title' => $conversation->title,
+            ]);
+        }
+
+        // 3. Save user message
         Message::create([
             'conversation_id' => $conversation->id,
             'role' => 'user',
-            'content' => $request->message,
+            'content' => $messageText,
         ]);
 
-        /**
-         * 2. Auto title (IA intelligente, seulement 1er message)
-         */
+        // 4. Auto title
         if ($conversation->title === 'Nouvelle conversation') {
-            $title = $this->generateAiTitle($request->message);
-
-            $conversation->update([
-                'title' => $title,
-            ]);
-
+            $title = $this->generateAiTitle($originalMessage);
+            $conversation->update(['title' => $title]);
             $conversation->refresh();
         }
 
-        /**
-         * 3. Build history
-         */
+        // 5. Build history
         $messages = Message::where('conversation_id', $conversation->id)
             ->orderBy('id')
             ->get()
@@ -123,9 +166,14 @@ class ChatController extends Controller
             ])
             ->toArray();
 
-        /**
-         * 4. OpenRouter request (chat)
-         */
+        // 6. Injection du profil utilisateur
+        $systemPrompt = $this->buildSystemPrompt($user, $userCommands);
+        array_unshift($messages, [
+            'role' => 'system',
+            'content' => $systemPrompt
+        ]);
+
+        // 7. OpenRouter request
         $response = Http::withHeaders([
             'Authorization' => 'Bearer ' . env('OPENROUTER_API_KEY'),
             'Content-Type' => 'application/json',
@@ -137,9 +185,7 @@ class ChatController extends Controller
             'temperature' => 0.7,
         ]);
 
-        /**
-         * 5. Handle API error
-         */
+        // 8. Handle API error
         if ($response->failed()) {
             return response()->json([
                 'message' => 'Erreur OpenRouter',
@@ -148,11 +194,9 @@ class ChatController extends Controller
         }
 
         $answer = $response->json('choices.0.message.content')
-            ?? 'Réponse vide';
+            ?? 'Desole, je n\'ai pas pu generer une reponse.';
 
-        /**
-         * 6. Save assistant message
-         */
+        // 9. Save assistant message
         Message::create([
             'conversation_id' => $conversation->id,
             'role' => 'assistant',
@@ -166,7 +210,115 @@ class ChatController extends Controller
     }
 
     /**
-     * IA TITLE GENERATOR (IMPORTANT)
+     * Decoder les commandes depuis JSON ou string
+     */
+    private function decodeCommands(mixed $commands): array
+    {
+        if (empty($commands)) {
+            return [];
+        }
+        
+        if (is_array($commands)) {
+            return $commands;
+        }
+        
+        if (is_string($commands)) {
+            $decoded = json_decode($commands, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+        
+        return [];
+    }
+
+    /**
+     * Obtenir le message d'aide
+     */
+    private function getHelpMessage(array $userCommands): string
+    {
+        $message = "Commandes disponibles :\n\n";
+        $message .= "Commandes natives :\n";
+        $message .= "- /help ou /aide : Affiche cette aide\n";
+        $message .= "- /commands : Liste tes commandes personnalisees\n\n";
+        
+        if (!empty($userCommands)) {
+            $message .= "Tes commandes personnalisees :\n";
+            foreach ($userCommands as $cmd => $instruction) {
+                $shortInstruction = substr($instruction, 0, 50);
+                $message .= "- {$cmd} : {$shortInstruction}...\n";
+            }
+        } else {
+            $message .= "Astuce : Va dans Parametres > IA pour creer tes propres commandes !\n";
+            $message .= "Exemple :\n";
+            $message .= "- /debug : Analyse ce code\n";
+            $message .= "- /eli5 : Explique simplement\n";
+            $message .= "- /review : Code review\n";
+        }
+        
+        return $message;
+    }
+
+    /**
+     * Obtenir la liste des commandes personnalisees
+     */
+    private function getCommandsList(array $userCommands): string
+    {
+        if (empty($userCommands)) {
+            return "Aucune commande personnalisee configuree.\n\nVa dans Parametres > IA pour en ajouter !";
+        }
+        
+        $response = "Tes commandes personnalisees :\n\n";
+        foreach ($userCommands as $cmd => $instruction) {
+            $response .= $cmd . " : " . $instruction . "\n\n";
+        }
+        $response .= "\nUtilise-les comme : " . array_key_first($userCommands) . " ta question";
+        
+        return $response;
+    }
+
+    /**
+     * Construire le system prompt avec le profil utilisateur
+     */
+    private function buildSystemPrompt(User $user, array $userCommands): string
+    {
+        $systemPrompt = "Tu es un assistant IA utile et precis.";
+        
+        if (!empty($userCommands)) {
+            $systemPrompt .= "\n\nCommandes disponibles :\n";
+            foreach ($userCommands as $cmd => $instruction) {
+                $systemPrompt .= "- {$cmd}: {$instruction}\n";
+            }
+            $systemPrompt .= "\nQuand l'utilisateur utilise ces commandes, reponds en consequence.\n";
+        }
+
+        if ($user->ai_about || $user->ai_behavior) {
+            $systemPrompt = "";
+            
+            if ($user->ai_about) {
+                $systemPrompt .= "A propos de l'utilisateur :\n" . $user->ai_about . "\n\n";
+            }
+            
+            if ($user->ai_behavior) {
+                $systemPrompt .= "Comportement attendu :\n" . $user->ai_behavior . "\n\n";
+            }
+            
+            if (!empty($userCommands)) {
+                $systemPrompt .= "Commandes personnalisees :\n";
+                foreach ($userCommands as $cmd => $instruction) {
+                    $systemPrompt .= "- {$cmd}: {$instruction}\n";
+                }
+                $systemPrompt .= "\n";
+            }
+            
+            $systemPrompt .= "Adapte tes reponses en fonction de ces informations.";
+        }
+        
+        return $systemPrompt;
+    }
+
+    /**
+     * Generer un titre de conversation avec l'IA
      */
     private function generateAiTitle(string $message): string
     {
@@ -180,7 +332,7 @@ class ChatController extends Controller
             'messages' => [
                 [
                     'role' => 'system',
-                    'content' => 'Tu génères des titres très courts (max 6 mots) pour des conversations. Réponds uniquement avec le titre, sans guillemets, sans ponctuation inutile.'
+                    'content' => 'Tu generes des titres tres courts (max 6 mots) pour des conversations. Reponds uniquement avec le titre, sans guillemets, sans ponctuation inutile.'
                 ],
                 [
                     'role' => 'user',

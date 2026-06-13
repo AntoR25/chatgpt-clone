@@ -32,6 +32,7 @@ class User extends Authenticatable implements PasskeyUser
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'ai_commands' => 'array',  // Ajoute cette ligne
             'two_factor_confirmed_at' => 'datetime',
         ];
     }

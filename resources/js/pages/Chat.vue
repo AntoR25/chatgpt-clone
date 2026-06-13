@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, nextTick } from 'vue'
+import { router } from '@inertiajs/vue3'
 
 const props = defineProps({
     conversations: {
@@ -14,6 +15,7 @@ const message = ref('')
 const loading = ref(false)
 const showDeleteModal = ref(false)
 const conversationToDelete = ref(null)
+const showCommands = ref(false)
 
 /**
  * ACTIVE CONVERSATION SAFE
@@ -28,6 +30,32 @@ const activeConversation = computed(() => {
 const messages = computed(() => {
     return activeConversation.value?.messages ?? []
 })
+
+/**
+ * NAVIGATION VERS PARAMETRES IA
+ */
+const goToAiSettings = () => {
+    router.visit('/settings/ai')
+}
+
+/**
+ * TOGGLE COMMANDES
+ */
+const toggleCommands = () => {
+    showCommands.value = !showCommands.value
+}
+
+/**
+ * INSERT COMMANDE DANS LE MESSAGE
+ */
+const insertCommand = (command) => {
+    message.value = command + ' '
+    showCommands.value = false
+    nextTick(() => {
+        const input = document.querySelector('input[type="text"]')
+        input?.focus()
+    })
+}
 
 /**
  * CREATE CONVERSATION (DB ONLY - IMPORTANT FIX)
@@ -47,11 +75,11 @@ const newConversation = async () => {
         try {
             data = await res.json()
         } catch (e) {
-            throw new Error("Réponse serveur invalide")
+            throw new Error("Reponse serveur invalide")
         }
 
         if (!res.ok) {
-            throw new Error(data?.message || "Erreur création conversation")
+            throw new Error(data?.message || "Erreur creation conversation")
         }
 
         if (!data || !data.id) {
@@ -68,7 +96,7 @@ const newConversation = async () => {
         activeId.value = newConv.id
 
     } catch (err) {
-        console.error('Erreur création conversation:', err.message)
+        console.error('Erreur creation conversation:', err.message)
     }
 }
 
@@ -106,14 +134,13 @@ const deleteConversation = async () => {
         try {
             data = await res.json()
         } catch (e) {
-            throw new Error("Réponse serveur invalide")
+            throw new Error("Reponse serveur invalide")
         }
 
         if (!res.ok) {
             throw new Error(data?.message || "Erreur suppression")
         }
 
-        // ✔ suppression UI seulement si backend OK
         conversations.value = conversations.value.filter(
             c => c?.id !== conversationToDelete.value
         )
@@ -124,7 +151,7 @@ const deleteConversation = async () => {
 
     } catch (err) {
         console.error('Erreur suppression:', err.message)
-        alert('❌ ' + err.message)
+        alert('Erreur: ' + err.message)
     }
 
     showDeleteModal.value = false
@@ -150,7 +177,19 @@ const scrollToBottom = () => {
 }
 
 /**
- * SEND MESSAGE (COMME DANS TON CODE ORIGINAL)
+ * DETECTER ET AFFICHER LES COMMANDES
+ */
+const isCommand = (text) => {
+    return text.startsWith('/')
+}
+
+const getCommandName = (text) => {
+    const parts = text.split(' ')
+    return parts[0]
+}
+
+/**
+ * SEND MESSAGE
  */
 const sendMessage = async () => {
     if (!message.value.trim() || loading.value || !activeId.value) return
@@ -193,7 +232,7 @@ const sendMessage = async () => {
         try {
             data = await res.json()
         } catch {
-            throw new Error('Réponse serveur invalide')
+            throw new Error('Reponse serveur invalide')
         }
 
         if (!res.ok) {
@@ -202,13 +241,12 @@ const sendMessage = async () => {
 
         conv.messages.push({
             role: 'assistant',
-            content: data.answer ?? 'Réponse vide'
+            content: data.answer ?? 'Reponse vide'
         })
 
         await nextTick()
         scrollToBottom()
 
-        // Mise à jour du titre de la conversation 
         if (
             data.conversation_title &&
             conv.title === 'Nouvelle conversation'
@@ -219,7 +257,7 @@ const sendMessage = async () => {
     } catch (err) {
         conv.messages.push({
             role: 'assistant',
-            content: '❌ ' + err.message
+            content: 'Erreur: ' + err.message
         })
     }
 
@@ -235,12 +273,23 @@ const sendMessage = async () => {
 
     <!-- SIDEBAR -->
     <aside class="w-72 bg-white border-r border-gray-200 flex flex-col">
-        <div class="p-4 border-b border-gray-200">
+        <div class="p-4 border-b border-gray-200 space-y-2">
             <button
                 @click="newConversation"
                 class="w-full bg-gray-900 text-white px-4 py-2 rounded-md hover:bg-gray-800 transition-all duration-200 text-sm font-medium"
             >
                 + Nouvelle conversation
+            </button>
+            
+            <button
+                @click="goToAiSettings"
+                class="w-full bg-gray-100 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-200 transition-all duration-200 text-sm font-medium flex items-center justify-center gap-2"
+            >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
+                Instructions IA
             </button>
         </div>
 
@@ -291,8 +340,20 @@ const sendMessage = async () => {
                 <h2 class="text-lg font-medium text-gray-900">
                     {{ activeConversation?.title || 'Chat' }}
                 </h2>
-                <div class="text-sm text-gray-500">
-                    {{ messages.length }} messages
+                <div class="flex items-center gap-3">
+                    <button
+                        @click="toggleCommands"
+                        class="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                        title="Voir les commandes"
+                    >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                        Commandes
+                    </button>
+                    <div class="text-sm text-gray-500">
+                        {{ messages.length }} messages
+                    </div>
                 </div>
             </div>
         </div>
@@ -304,13 +365,14 @@ const sendMessage = async () => {
         >
             <div v-if="!activeConversation" class="flex items-center justify-center h-full">
                 <div class="text-center">
-                    <p class="text-gray-500">Crée une conversation 👈</p>
+                    <p class="text-gray-500">Cree une conversation 👈</p>
                 </div>
             </div>
 
             <div v-else-if="messages.length === 0" class="flex items-center justify-center h-full">
                 <div class="text-center">
                     <p class="text-gray-500">Envoie un message pour commencer</p>
+                    <p class="text-xs text-gray-400 mt-2">Astuce: utilise /help pour voir les commandes</p>
                 </div>
             </div>
 
@@ -331,6 +393,9 @@ const sendMessage = async () => {
                                     ? 'bg-gray-900 text-white'
                                     : 'bg-white text-gray-900 border border-gray-200'"
                             >
+                                <span v-if="m.role === 'user' && isCommand(m.content)" class="text-blue-400 font-mono text-xs">
+                                    {{ getCommandName(m.content) }}
+                                </span>
                                 {{ m.content }}
                             </div>
                         </div>
@@ -340,7 +405,7 @@ const sendMessage = async () => {
 
             <div v-if="loading" class="flex justify-start mt-4 animate-fade-in">
                 <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-sm text-gray-500">
-                    Réfléchit...
+                    Reflechit...
                 </div>
             </div>
         </div>
@@ -348,14 +413,16 @@ const sendMessage = async () => {
         <!-- Input Area -->
         <div class="bg-white border-t border-gray-200 p-4">
             <div class="flex gap-2">
-                <input
-                    v-model="message"
-                    @keyup.enter="sendMessage"
-                    type="text"
-                    class="flex-1 px-4 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent text-sm placeholder-gray-400"
-                    :disabled="loading || !activeId"
-                    placeholder="Pose une question..."
-                />
+                <div class="flex-1 relative">
+                    <input
+                        v-model="message"
+                        @keyup.enter="sendMessage"
+                        type="text"
+                        class="w-full px-4 py-2 bg-white text-gray-900 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent text-sm placeholder-gray-400"
+                        :disabled="loading || !activeId"
+                        placeholder="Pose une question... ou utilise /help"
+                    />
+                </div>
                 <button
                     @click="sendMessage"
                     class="px-4 py-2 bg-gray-900 text-white rounded-md hover:bg-gray-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
@@ -363,6 +430,26 @@ const sendMessage = async () => {
                 >
                     Envoyer
                 </button>
+            </div>
+            
+            <!-- Commandes Panel -->
+            <div v-if="showCommands" class="mt-3 p-3 bg-gray-50 rounded-md border border-gray-200 animate-fade-in">
+                <div class="text-xs text-gray-600 mb-2">Commandes disponibles:</div>
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                    <div class="font-mono text-blue-600">/help</div>
+                    <div class="text-gray-600">Afficher l'aide</div>
+                    <div class="font-mono text-blue-600">/commands</div>
+                    <div class="text-gray-600">Lister tes commandes</div>
+                    <div class="font-mono text-blue-600">/debug</div>
+                    <div class="text-gray-600">Analyser du code</div>
+                    <div class="font-mono text-blue-600">/eli5</div>
+                    <div class="text-gray-600">Expliquer simplement</div>
+                    <div class="font-mono text-blue-600">/review</div>
+                    <div class="text-gray-600">Code review</div>
+                </div>
+                <div class="mt-2 text-xs text-gray-500">
+                    Va dans Instructions IA pour creer tes propres commandes
+                </div>
             </div>
         </div>
     </main>
@@ -375,7 +462,7 @@ const sendMessage = async () => {
                     Supprimer la conversation
                 </h3>
                 <p class="text-sm text-gray-500 mb-6">
-                    Êtes-vous sûr de vouloir supprimer cette conversation ? Cette action est irréversible.
+                    Etes-vous sur de vouloir supprimer cette conversation ? Cette action est irreversible.
                 </p>
                 <div class="flex gap-3">
                     <button
