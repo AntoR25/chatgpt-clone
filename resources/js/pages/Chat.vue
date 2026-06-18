@@ -1,6 +1,8 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
 import { router } from '@inertiajs/vue3'
+import { useStream } from '@laravel/stream-vue'
+import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 
 const props = defineProps({
     conversations: {
@@ -17,6 +19,12 @@ const showDeleteModal = ref(false)
 const conversationToDelete = ref(null)
 const showCommands = ref(false)
 const showModelSelector = ref(false)
+
+// Variables pour le streaming
+const isStreaming = ref(false)
+const streamedContent = ref('')
+const streamedReasoning = ref('')
+const fullStreamedResponse = ref('')
 
 // Modeles qui fonctionnent sur OpenRouter
 const models = [
@@ -41,6 +49,118 @@ const models = [
 ]
 
 const selectedModel = ref('openai/gpt-4o-mini')
+
+// Hook de streaming
+const { data, isFetching, isStreaming: streamActive, send, cancel } = useStream(
+    '/chat/stream',
+    {
+        onData: () => {
+            // Le chunk est automatiquement concaténé dans `data`
+            const content = extractContent(data.value || '')
+            const reasoning = extractReasoning(data.value || '')
+            streamedContent.value = content
+            streamedReasoning.value = reasoning
+            fullStreamedResponse.value = data.value || ''
+            
+            // Scroll automatique
+            nextTick(() => scrollToBottom())
+        },
+        onFinish: () => {
+            // Sauvegarder le message final dans l'historique
+            if (activeConversation.value && fullStreamedResponse.value) {
+                const content = extractContent(fullStreamedResponse.value)
+                const reasoning = extractReasoning(fullStreamedResponse.value)
+                
+                const conv = activeConversation.value
+                if (conv) {
+                    if (!Array.isArray(conv.messages)) {
+                        conv.messages = []
+                    }
+                    
+                    // Ajouter à l'UI
+                    conv.messages.push({
+                        role: 'assistant',
+                        content: content,
+                        reasoning: reasoning || null,
+                        model: selectedModel.value
+                    })
+                }
+            }
+            
+            isStreaming.value = false
+            streamedContent.value = ''
+            streamedReasoning.value = ''
+            fullStreamedResponse.value = ''
+            message.value = ''
+            loading.value = false
+        },
+        onError: (err) => {
+            console.error('Erreur streaming:', err)
+            isStreaming.value = false
+            loading.value = false
+            streamedContent.value = ''
+            streamedReasoning.value = ''
+            
+            // Ajouter un message d'erreur
+            const conv = activeConversation.value
+            if (conv) {
+                conv.messages.push({
+                    role: 'assistant',
+                    content: 'Erreur: ' + err.message,
+                    model: null
+                })
+            }
+        }
+    }
+)
+
+/**
+ * Extrait le contenu principal (sans le reasoning)
+ */
+const extractContent = (text) => {
+    if (!text) return ''
+    return text.replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/g, '').trim()
+}
+
+/**
+ * Extrait le reasoning des marqueurs
+ */
+const extractReasoning = (text) => {
+    if (!text) return ''
+    const matches = text.match(/\[REASONING\]([\s\S]*?)\[\/REASONING\]/g)
+    if (!matches) return ''
+    return matches
+        .map((m) => m.replace(/\[REASONING\]/g, '').replace(/\[\/REASONING\]/g, ''))
+        .join('')
+}
+
+/**
+ * Vérifier si le contenu contient du reasoning
+ */
+const hasReasoning = computed(() => {
+    return streamedReasoning.value && streamedReasoning.value.length > 0
+})
+
+/**
+ * Annuler le streaming
+ */
+const cancelStream = () => {
+    if (streamActive.value) {
+        cancel()
+        isStreaming.value = false
+        loading.value = false
+        
+        // Ajouter un message d'annulation
+        const conv = activeConversation.value
+        if (conv) {
+            conv.messages.push({
+                role: 'assistant',
+                content: 'Réponse annulée.',
+                model: null
+            })
+        }
+    }
+}
 
 /**
  * Sauvegarder le modele prefere de l'utilisateur
@@ -277,14 +397,14 @@ const getCommandName = (text) => {
 }
 
 /**
- * SEND MESSAGE
+ * SEND MESSAGE AVEC STREAMING
  */
 const sendMessage = async () => {
     if (!message.value.trim() || loading.value || !activeId.value) return
 
     const text = message.value
-    message.value = ''
-
+    
+    // Ajouter le message utilisateur à l'historique (UI)
     const conv = activeConversation.value
     if (!conv) return
 
@@ -298,17 +418,12 @@ const sendMessage = async () => {
         model: null
     })
 
-    loading.value = true
-
-    await nextTick()
-    scrollToBottom()
-
+    // Sauvegarder le message utilisateur en DB et recharger
     try {
-        const res = await fetch('/chat/send', {
+        const response = await fetch('/chat/send', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Accept': 'application/json',
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
             },
             body: JSON.stringify({
@@ -317,46 +432,37 @@ const sendMessage = async () => {
                 model: selectedModel.value
             })
         })
-
-        let data
-        try {
-            data = await res.json()
-        } catch {
-            throw new Error('Reponse serveur invalide')
-        }
-
-        if (!res.ok) {
-            throw new Error(data?.message || 'Erreur API')
-        }
-
-        conv.messages.push({
-            role: 'assistant',
-            content: data.answer ?? 'Reponse vide',
-            model: selectedModel.value  // Sauvegarde le modele utilise
-        })
-
-        await nextTick()
-        scrollToBottom()
-
-        if (
-            data.conversation_title &&
-            conv.title === 'Nouvelle conversation'
-        ) {
+        
+        const data = await response.json()
+        
+        // Mettre à jour le titre si nécessaire
+        if (data.conversation_title && conv.title === 'Nouvelle conversation') {
             conv.title = data.conversation_title
         }
-
     } catch (err) {
-        conv.messages.push({
-            role: 'assistant',
-            content: 'Erreur: ' + err.message,
-            model: null
-        })
+        console.error('Erreur sauvegarde message utilisateur:', err)
     }
 
-    loading.value = false
+    // Réinitialiser le streaming
+    streamedContent.value = ''
+    streamedReasoning.value = ''
+    fullStreamedResponse.value = ''
+    isStreaming.value = true
+    loading.value = true
 
-    await nextTick()
-    scrollToBottom()
+    // Envoyer la requête de streaming
+    try {
+        await send({
+            message: text,
+            model: selectedModel.value,
+            temperature: 0.7,
+            reasoning_effort: null
+        })
+    } catch (err) {
+        console.error('Erreur:', err)
+        isStreaming.value = false
+        loading.value = false
+    }
 }
 
 onMounted(() => {
@@ -518,7 +624,7 @@ onMounted(() => {
                 </div>
             </div>
 
-            <div v-else-if="messages.length === 0" class="flex items-center justify-center h-full">
+            <div v-else-if="messages.length === 0 && !isStreaming" class="flex items-center justify-center h-full">
                 <div class="text-center">
                     <p class="text-gray-500">Envoie un message pour commencer</p>
                     <p class="text-xs text-gray-400 mt-2">Modele actuel: {{ getSelectedModelInfo().name }} ({{ getSelectedModelInfo().provider }})</p>
@@ -527,6 +633,7 @@ onMounted(() => {
             </div>
 
             <div v-else class="space-y-4">
+                <!-- Messages historiques -->
                 <div 
                     v-for="(m, i) in messages" 
                     :key="i"
@@ -546,14 +653,35 @@ onMounted(() => {
                                 <span v-if="m.role === 'user' && isCommand(m.content)" class="text-blue-400 font-mono text-xs">
                                     {{ getCommandName(m.content) }}
                                 </span>
-                                {{ m.content }}
+                                <MarkdownRenderer :content="m.content" />
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stream en cours -->
+                <div v-if="isStreaming" class="flex justify-start animate-message-in">
+                    <div class="max-w-xl">
+                        <div class="text-xs text-gray-500 mb-1 px-2">
+                            {{ getSelectedModelInfo().name }}
+                        </div>
+                        <div class="bg-white text-gray-900 border border-gray-200 px-4 py-2 rounded-lg whitespace-pre-wrap text-sm">
+                            <!-- Affichage du reasoning (optionnel) -->
+                            <div v-if="hasReasoning" class="mb-2 p-2 bg-gray-50 rounded text-xs text-gray-600 border border-gray-100">
+                                <div class="font-medium text-gray-500 mb-1">🧠 Reasoning:</div>
+                                <pre class="whitespace-pre-wrap font-sans">{{ streamedReasoning }}</pre>
+                            </div>
+                            <!-- Contenu principal -->
+                            <span v-if="streamedContent">
+                                <MarkdownRenderer :content="streamedContent" />
+                            </span>
+                            <span v-else class="text-gray-400">▌</span>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div v-if="loading" class="flex justify-start mt-4 animate-fade-in">
+            <div v-if="loading && !isStreaming" class="flex justify-start mt-4 animate-fade-in">
                 <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-sm text-gray-500">
                     {{ getSelectedModelInfo().name }} reflechit...
                 </div>
@@ -569,16 +697,24 @@ onMounted(() => {
                         @keyup.enter="sendMessage"
                         type="text"
                         class="w-full px-4 py-2.5 bg-white text-gray-900 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent text-sm placeholder-gray-400"
-                        :disabled="loading || !activeId"
+                        :disabled="loading || !activeId || isStreaming"
                         placeholder="Pose une question... ou utilise /help"
                     />
                 </div>
                 <button
+                    v-if="!isStreaming"
                     @click="sendMessage"
                     class="px-5 py-2.5 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
                     :disabled="loading || !activeId"
                 >
                     Envoyer
+                </button>
+                <button
+                    v-else
+                    @click="cancelStream"
+                    class="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all duration-200 text-sm font-medium"
+                >
+                    Annuler
                 </button>
             </div>
             

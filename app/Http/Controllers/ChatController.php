@@ -77,6 +77,7 @@ class ChatController extends Controller
             'message' => ['required', 'string'],
             'conversation_id' => ['required', 'integer'],
             'model' => ['nullable', 'string'],
+            'stream' => ['nullable', 'boolean'],
         ]);
 
         $conversation = Conversation::where('id', $request->conversation_id)
@@ -95,6 +96,7 @@ class ChatController extends Controller
 
         // Recuperer le modele prefere de l'utilisateur ou celui passe dans la requete
         $model = $request->input('model', $user->preferred_model ?? 'openai/gpt-4o-mini');
+        $useStream = $request->input('stream', false);
 
         // Decoder les commandes depuis JSON
         $userCommands = $this->decodeCommands($user->ai_commands);
@@ -182,7 +184,12 @@ class ChatController extends Controller
             'content' => $systemPrompt
         ]);
 
-        // 7. OpenRouter request avec le modele selectionne
+        // 7. Si streaming demandé, retourner une réponse streamée
+        if ($useStream) {
+            return $this->streamResponse($model, $messages);
+        }
+
+        // 8. OpenRouter request sans streaming
         $response = Http::withHeaders([
             'Authorization' => 'Bearer ' . env('OPENROUTER_API_KEY'),
             'Content-Type' => 'application/json',
@@ -194,7 +201,7 @@ class ChatController extends Controller
             'temperature' => 0.7,
         ]);
 
-        // 8. Handle API error
+        // 9. Handle API error
         if ($response->failed()) {
             return response()->json([
                 'message' => 'Erreur OpenRouter',
@@ -205,7 +212,7 @@ class ChatController extends Controller
         $answer = $response->json('choices.0.message.content')
             ?? 'Desole, je n\'ai pas pu generer une reponse.';
 
-        // 9. Save assistant message avec le modele utilise
+        // 10. Save assistant message avec le modele utilise
         Message::create([
             'conversation_id' => $conversation->id,
             'role' => 'assistant',
@@ -356,5 +363,97 @@ class ChatController extends Controller
             $response->json('choices.0.message.content')
             ?? 'Nouvelle conversation'
         );
+    }
+
+    /**
+     * Streamer la reponse de l'IA en temps reel
+     */
+    private function streamResponse(string $model, array $messages)
+    {
+        return response()->stream(function () use ($model, $messages) {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . env('OPENROUTER_API_KEY'),
+                'Content-Type' => 'application/json',
+                'HTTP-Referer' => config('app.url'),
+                'X-Title' => config('app.name'),
+            ])->withOptions(['stream' => true])
+            ->timeout(120)
+            ->post('https://openrouter.ai/api/v1/chat/completions', [
+                'model' => $model,
+                'messages' => $messages,
+                'temperature' => 0.7,
+                'stream' => true,
+            ]);
+
+            if ($response->failed()) {
+                echo '[ERROR] ' . $response->json('error.message', 'Erreur HTTP');
+                if (ob_get_level() > 0) ob_flush();
+                flush();
+                return;
+            }
+
+            $body = $response->toPsrResponse()->getBody();
+            $buffer = '';
+
+            while (!$body->eof()) {
+                $buffer .= $body->read(1024);
+
+                while (($pos = strpos($buffer, "\n")) !== false) {
+                    $line = trim(substr($buffer, 0, $pos));
+                    $buffer = substr($buffer, $pos + 1);
+
+                    if ($line === '' || str_starts_with($line, ':')) {
+                        continue;
+                    }
+
+                    if (!str_starts_with($line, 'data: ')) {
+                        continue;
+                    }
+
+                    $data = substr($line, 6);
+
+                    if ($data === '[DONE]') {
+                        break 2;
+                    }
+
+                    try {
+                        $chunk = json_decode($data, true, 512, JSON_THROW_ON_ERROR);
+                        
+                        if (isset($chunk['error'])) {
+                            echo '[ERROR] ' . ($chunk['error']['message'] ?? 'Erreur inconnue');
+                            if (ob_get_level() > 0) ob_flush();
+                            flush();
+                            break 2;
+                        }
+
+                        $delta = $chunk['choices'][0]['delta'] ?? [];
+
+                        if (!empty($delta['content'])) {
+                            echo $delta['content'];
+                            if (ob_get_level() > 0) ob_flush();
+                            flush();
+                        }
+
+                        if (!empty($delta['reasoning'])) {
+                            echo '[REASONING]' . $delta['reasoning'] . '[/REASONING]';
+                            if (ob_get_level() > 0) ob_flush();
+                            flush();
+                        }
+
+                        if (!empty($delta['reasoning_content'])) {
+                            echo '[REASONING]' . $delta['reasoning_content'] . '[/REASONING]';
+                            if (ob_get_level() > 0) ob_flush();
+                            flush();
+                        }
+                    } catch (\JsonException) {
+                        // Ignorer les erreurs JSON
+                    }
+                }
+            }
+        }, 200, [
+            'Content-Type' => 'text/plain; charset=utf-8',
+            'Cache-Control' => 'no-cache, no-store',
+            'X-Accel-Buffering' => 'no',
+        ]);
     }
 }

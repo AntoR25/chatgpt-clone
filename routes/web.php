@@ -3,10 +3,12 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ChatController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\StreamController;
 
 Route::inertia('/', 'Welcome')->name('home');
 
 Route::middleware('auth')->group(function () {
+    Route::post('/chat/stream', [StreamController::class, 'stream'])->middleware('auth');
     // Chat routes
     Route::get('/chat', [ChatController::class, 'index']);
     Route::post('/chat/send', [ChatController::class, 'send']);
