@@ -25,26 +25,92 @@ const isStreaming = ref(false)
 const streamedContent = ref('')
 const streamedReasoning = ref('')
 const fullStreamedResponse = ref('')
+const isConnecting = ref(false)
 
-// Modeles qui fonctionnent sur OpenRouter
+// Theme sombre/clair
+const darkMode = ref(localStorage.getItem('theme') === 'dark' || false)
+
+// Stats session
+const sessionStats = ref({
+    messagesSent: 0,
+    totalTokens: 0,
+    estimatedCost: 0,
+    sessionStart: new Date(),
+    wordsGenerated: 0
+})
+
+// Export
+const showExportModal = ref(false)
+const exportFormat = ref('md')
+const exportOptions = ref({
+    includeMetadata: true,
+    includeReasoning: false,
+    includeStats: true
+})
+
+// Suggestions rapides
+const quickSuggestions = ref([
+    'Explique-moi ce concept',
+    'Donne-moi un exemple',
+    'Resume ce texte',
+    'Traduis en francais'
+])
+
+// Mode thinking
+const showThinking = ref(true)
+
+// Keyboard shortcuts
+const shortcuts = ref({
+    newConversation: 'Ctrl+N',
+    toggleDark: 'Ctrl+Shift+D'
+})
+
+// ============================================================
+// MODELES
+// ============================================================
+
 const models = [
     { 
         id: 'openai/gpt-4o-mini', 
         name: 'GPT-4o Mini', 
         provider: 'OpenAI',
-        description: 'Rapide, efficace et pas cher'
+        description: 'Rapide, efficace et pas cher',
+        pricePer1k: 0.00015
     },
     { 
         id: 'openai/gpt-4o', 
         name: 'GPT-4o', 
         provider: 'OpenAI',
-        description: 'Plus puissant, bon pour les taches complexes'
+        description: 'Plus puissant, bon pour les taches complexes',
+        pricePer1k: 0.005
     },
     { 
         id: 'openai/gpt-3.5-turbo', 
         name: 'GPT-3.5 Turbo', 
         provider: 'OpenAI',
-        description: 'Le moins cher, rapide pour les reponses simples'
+        description: 'Le moins cher, rapide pour les reponses simples',
+        pricePer1k: 0.0005
+    },
+    { 
+        id: 'anthropic/claude-3-5-sonnet-20241022', 
+        name: 'Claude 3.5 Sonnet', 
+        provider: 'Anthropic',
+        description: 'Excellent pour le raisonnement',
+        pricePer1k: 0.003
+    },
+    { 
+        id: 'google/gemini-2.0-flash-exp', 
+        name: 'Gemini 2.0 Flash', 
+        provider: 'Google',
+        description: 'Ultra rapide, bonne qualite',
+        pricePer1k: 0.001
+    },
+    { 
+        id: 'meta-llama/llama-3.3-70b-instruct', 
+        name: 'Llama 3.3 70B', 
+        provider: 'Meta',
+        description: 'Open source, tres performant',
+        pricePer1k: 0.0008
     }
 ]
 
@@ -55,18 +121,15 @@ const { data, isFetching, isStreaming: streamActive, send, cancel } = useStream(
     '/chat/stream',
     {
         onData: () => {
-            // Le chunk est automatiquement concaténé dans `data`
             const content = extractContent(data.value || '')
             const reasoning = extractReasoning(data.value || '')
             streamedContent.value = content
             streamedReasoning.value = reasoning
             fullStreamedResponse.value = data.value || ''
-            
-            // Scroll automatique
+            isConnecting.value = false
             nextTick(() => scrollToBottom())
         },
         onFinish: () => {
-            // Sauvegarder le message final dans l'historique
             if (activeConversation.value && fullStreamedResponse.value) {
                 const content = extractContent(fullStreamedResponse.value)
                 const reasoning = extractReasoning(fullStreamedResponse.value)
@@ -77,17 +140,28 @@ const { data, isFetching, isStreaming: streamActive, send, cancel } = useStream(
                         conv.messages = []
                     }
                     
-                    // Ajouter à l'UI
+                    const estimatedTokens = Math.ceil(content.length / 4)
+                    const modelCost = models.find(m => m.id === selectedModel.value)?.pricePer1k || 0
+                    
                     conv.messages.push({
                         role: 'assistant',
                         content: content,
                         reasoning: reasoning || null,
-                        model: selectedModel.value
+                        model: selectedModel.value,
+                        tokens: estimatedTokens,
+                        cost: estimatedTokens * modelCost / 1000,
+                        timestamp: new Date().toISOString()
                     })
+                    
+                    sessionStats.value.totalTokens += estimatedTokens
+                    sessionStats.value.estimatedCost += estimatedTokens * modelCost / 1000
+                    sessionStats.value.messagesSent++
+                    sessionStats.value.wordsGenerated += content.split(/\s+/).length
                 }
             }
             
             isStreaming.value = false
+            isConnecting.value = false
             streamedContent.value = ''
             streamedReasoning.value = ''
             fullStreamedResponse.value = ''
@@ -97,100 +171,82 @@ const { data, isFetching, isStreaming: streamActive, send, cancel } = useStream(
         onError: (err) => {
             console.error('Erreur streaming:', err)
             isStreaming.value = false
+            isConnecting.value = false
             loading.value = false
             streamedContent.value = ''
             streamedReasoning.value = ''
             
-            // Ajouter un message d'erreur
             const conv = activeConversation.value
             if (conv) {
                 conv.messages.push({
                     role: 'assistant',
                     content: 'Erreur: ' + err.message,
-                    model: null
+                    model: null,
+                    timestamp: new Date().toISOString()
                 })
             }
         }
     }
 )
 
-/**
- * Extrait le contenu principal (sans le reasoning)
- */
+// ============================================================
+// FONCTIONS EXISTANTES
+// ============================================================
+
 const extractContent = (text) => {
     if (!text) return ''
     return text.replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/g, '').trim()
 }
 
-/**
- * Extrait le reasoning des marqueurs
- */
 const extractReasoning = (text) => {
     if (!text) return ''
     const matches = text.match(/\[REASONING\]([\s\S]*?)\[\/REASONING\]/g)
     if (!matches) return ''
-    return matches
-        .map((m) => m.replace(/\[REASONING\]/g, '').replace(/\[\/REASONING\]/g, ''))
-        .join('')
+    return matches.map((m) => m.replace(/\[REASONING\]/g, '').replace(/\[\/REASONING\]/g, '')).join('')
 }
 
-/**
- * Vérifier si le contenu contient du reasoning
- */
 const hasReasoning = computed(() => {
     return streamedReasoning.value && streamedReasoning.value.length > 0
 })
 
-/**
- * Annuler le streaming
- */
 const cancelStream = () => {
     if (streamActive.value) {
         cancel()
         isStreaming.value = false
+        isConnecting.value = false
         loading.value = false
         
-        // Ajouter un message d'annulation
         const conv = activeConversation.value
         if (conv) {
             conv.messages.push({
                 role: 'assistant',
-                content: 'Réponse annulée.',
-                model: null
+                content: 'Reponse annulee.',
+                model: null,
+                timestamp: new Date().toISOString()
             })
         }
     }
 }
 
-/**
- * Sauvegarder le modele prefere de l'utilisateur
- */
+// ============================================================
+// SAUVEGARDE MODELE
+// ============================================================
+
 const savePreferredModel = async (modelId) => {
     try {
-        const response = await fetch('/user/ai-profile', {
+        await fetch('/user/ai-profile', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
             },
-            body: JSON.stringify({
-                preferred_model: modelId
-                // Ne pas envoyer ai_about, ai_behavior, ai_commands
-            })
+            body: JSON.stringify({ preferred_model: modelId })
         })
-        
-        if (!response.ok) {
-            throw new Error('Erreur sauvegarde')
-        }
     } catch (err) {
         console.error('Erreur sauvegarde modele:', err)
     }
 }
 
-
-/**
- * Charger le modele prefere depuis le serveur
- */
 const loadPreferredModel = async () => {
     try {
         const response = await fetch('/user/ai-profile')
@@ -203,32 +259,20 @@ const loadPreferredModel = async () => {
     }
 }
 
-/**
- * Selectionner un modele (ne touche pas aux instructions perso)
- */
 const selectModel = async (modelId) => {
     selectedModel.value = modelId
     showModelSelector.value = false
     await savePreferredModel(modelId)
 }
 
-/**
- * Toggle modele selector
- */
 const toggleModelSelector = () => {
     showModelSelector.value = !showModelSelector.value
 }
 
-/**
- * Infos du modele selectionne
- */
 const getSelectedModelInfo = () => {
     return models.find(m => m.id === selectedModel.value) || models[0]
 }
 
-/**
- * Obtenir le nom du modele pour un message (si disponible)
- */
 const getMessageModelName = (message) => {
     if (message.model) {
         const model = models.find(m => m.id === message.model)
@@ -237,37 +281,107 @@ const getMessageModelName = (message) => {
     return null
 }
 
-/**
- * ACTIVE CONVERSATION SAFE
- */
 const activeConversation = computed(() => {
     return conversations.value.find(c => c?.id === activeId.value) || null
 })
 
-/**
- * MESSAGES SAFE
- */
 const messages = computed(() => {
-    return activeConversation.value?.messages ?? []
+    return activeConversation.value?.messages || []
 })
 
-/**
- * NAVIGATION VERS PARAMETRES IA
- */
+// ============================================================
+// THEME
+// ============================================================
+
+const toggleDarkMode = () => {
+    darkMode.value = !darkMode.value
+    localStorage.setItem('theme', darkMode.value ? 'dark' : 'light')
+    if (darkMode.value) {
+        document.documentElement.classList.add('dark')
+    } else {
+        document.documentElement.classList.remove('dark')
+    }
+}
+
+// ============================================================
+// EXPORT
+// ============================================================
+
+const exportConversation = () => {
+    const conv = activeConversation.value
+    if (!conv) return
+    
+    let content = ''
+    
+    if (exportOptions.value.includeMetadata) {
+        content += `# ${conv.title}\n\n`
+        content += `Exporte le: ${new Date().toLocaleString()}\n`
+        content += `Modele: ${getSelectedModelInfo().name}\n`
+        content += `Messages: ${conv.messages.length}\n\n---\n\n`
+    }
+    
+    conv.messages.forEach((m, i) => {
+        const role = m.role === 'user' ? 'Utilisateur' : 'Assistant'
+        content += `## ${role} (${i + 1})\n\n`
+        content += m.content + '\n\n'
+        if (exportOptions.value.includeReasoning && m.reasoning) {
+            content += `**Reflexion:**\n${m.reasoning}\n\n`
+        }
+        if (exportOptions.value.includeStats && m.tokens) {
+            content += `*${m.tokens} tokens, $${(m.cost || 0).toFixed(6)}*\n\n`
+        }
+        content += '---\n\n'
+    })
+    
+    if (exportOptions.value.includeStats) {
+        content += `\n## Statistiques\n\n`
+        content += `- Messages: ${sessionStats.value.messagesSent}\n`
+        content += `- Tokens: ${sessionStats.value.totalTokens}\n`
+        content += `- Cout estime: $${sessionStats.value.estimatedCost.toFixed(6)}\n`
+    }
+    
+    const blob = new Blob([content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${conv.title}.${exportFormat.value}`
+    a.click()
+    URL.revokeObjectURL(url)
+    showExportModal.value = false
+}
+
+// ============================================================
+// SUGGESTIONS
+// ============================================================
+
+const useSuggestion = (suggestion) => {
+    message.value = suggestion
+    nextTick(() => {
+        const input = document.querySelector('input[type="text"]')
+        if (input) input.focus()
+    })
+}
+
+// ============================================================
+// THINKING
+// ============================================================
+
+const toggleThinking = () => {
+    showThinking.value = !showThinking.value
+}
+
+// ============================================================
+// FONCTIONS EXISTANTES
+// ============================================================
+
 const goToAiSettings = () => {
     router.visit('/settings/ai')
 }
 
-/**
- * TOGGLE COMMANDES
- */
 const toggleCommands = () => {
     showCommands.value = !showCommands.value
 }
 
-/**
- * CREATE CONVERSATION
- */
 const newConversation = async () => {
     try {
         const res = await fetch('/chat/conversation', {
@@ -279,46 +393,34 @@ const newConversation = async () => {
             }
         })
 
-        let data = null
-        try {
-            data = await res.json()
-        } catch (e) {
-            throw new Error("Reponse serveur invalide")
-        }
-
-        if (!res.ok) {
-            throw new Error(data?.message || "Erreur creation conversation")
-        }
-
-        if (!data || !data.id) {
-            throw new Error("Conversation invalide (pas d'id)")
-        }
+        let data = await res.json()
+        if (!res.ok) throw new Error(data?.message || "Erreur creation conversation")
+        if (!data?.id) throw new Error("Conversation invalide")
 
         const newConv = {
             id: data.id,
             title: data.title ?? 'Nouvelle conversation',
-            messages: []
+            messages: [],
+            createdAt: new Date()
         }
 
         conversations.value.unshift(newConv)
         activeId.value = newConv.id
+        sessionStats.value.messagesSent = 0
+        sessionStats.value.totalTokens = 0
+        sessionStats.value.estimatedCost = 0
+        sessionStats.value.sessionStart = new Date()
 
     } catch (err) {
         console.error('Erreur creation conversation:', err.message)
     }
 }
 
-/**
- * SWITCH CONVERSATION
- */
 const switchConversation = (id) => {
     activeId.value = id
     nextTick(() => scrollToBottom())
 }
 
-/**
- * DELETE CONVERSATION
- */
 const confirmDelete = (id, event) => {
     event.stopPropagation()
     conversationToDelete.value = id
@@ -338,21 +440,10 @@ const deleteConversation = async () => {
             }
         })
 
-        let data = null
-        try {
-            data = await res.json()
-        } catch (e) {
-            throw new Error("Reponse serveur invalide")
-        }
+        let data = await res.json()
+        if (!res.ok) throw new Error(data?.message || "Erreur suppression")
 
-        if (!res.ok) {
-            throw new Error(data?.message || "Erreur suppression")
-        }
-
-        conversations.value = conversations.value.filter(
-            c => c?.id !== conversationToDelete.value
-        )
-
+        conversations.value = conversations.value.filter(c => c?.id !== conversationToDelete.value)
         if (activeId.value === conversationToDelete.value) {
             activeId.value = conversations.value[0]?.id ?? null
         }
@@ -371,40 +462,26 @@ const cancelDelete = () => {
     conversationToDelete.value = null
 }
 
-/**
- * SCROLL
- */
 const scrollToBottom = () => {
     const el = document.getElementById('chat-box')
     if (el) {
-        el.scrollTo({
-            top: el.scrollHeight,
-            behavior: 'smooth'
-        })
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
     }
 }
 
-/**
- * DETECTER ET AFFICHER LES COMMANDES
- */
-const isCommand = (text) => {
-    return text.startsWith('/')
-}
+const isCommand = (text) => text.startsWith('/')
+const getCommandName = (text) => text.split(' ')[0]
 
-const getCommandName = (text) => {
-    const parts = text.split(' ')
-    return parts[0]
-}
+// ============================================================
+// SEND MESSAGE
+// ============================================================
 
-/**
- * SEND MESSAGE AVEC STREAMING
- */
 const sendMessage = async () => {
     if (!message.value.trim() || loading.value || !activeId.value) return
 
     const text = message.value
+    message.value = ''
     
-    // Ajouter le message utilisateur à l'historique (UI)
     const conv = activeConversation.value
     if (!conv) return
 
@@ -415,10 +492,14 @@ const sendMessage = async () => {
     conv.messages.push({
         role: 'user',
         content: text,
-        model: null
+        model: null,
+        timestamp: new Date().toISOString()
     })
 
-    // Sauvegarder le message utilisateur en DB et recharger
+    // Afficher immediatement "L'IA reflechit..."
+    isConnecting.value = true
+    loading.value = true
+
     try {
         const response = await fetch('/chat/send', {
             method: 'POST',
@@ -434,8 +515,6 @@ const sendMessage = async () => {
         })
         
         const data = await response.json()
-        
-        // Mettre à jour le titre si nécessaire
         if (data.conversation_title && conv.title === 'Nouvelle conversation') {
             conv.title = data.conversation_title
         }
@@ -443,14 +522,11 @@ const sendMessage = async () => {
         console.error('Erreur sauvegarde message utilisateur:', err)
     }
 
-    // Réinitialiser le streaming
     streamedContent.value = ''
     streamedReasoning.value = ''
     fullStreamedResponse.value = ''
     isStreaming.value = true
-    loading.value = true
 
-    // Envoyer la requête de streaming
     try {
         await send({
             message: text,
@@ -461,69 +537,123 @@ const sendMessage = async () => {
     } catch (err) {
         console.error('Erreur:', err)
         isStreaming.value = false
+        isConnecting.value = false
         loading.value = false
     }
 }
 
+// ============================================================
+// KEYBOARD SHORTCUTS
+// ============================================================
+
+const handleKeydown = (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'n') {
+        event.preventDefault()
+        newConversation()
+    }
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'D') {
+        event.preventDefault()
+        toggleDarkMode()
+    }
+}
+
+// ============================================================
+// COMPUTED
+// ============================================================
+
+const formattedStats = computed(() => {
+    const duration = Math.floor((Date.now() - new Date(sessionStats.value.sessionStart).getTime()) / 1000)
+    const hours = Math.floor(duration / 3600)
+    const minutes = Math.floor((duration % 3600) / 60)
+    const seconds = duration % 60
+    
+    return {
+        duration: `${hours}h ${minutes}m ${seconds}s`,
+        cost: '$' + sessionStats.value.estimatedCost.toFixed(6),
+        tokens: sessionStats.value.totalTokens.toLocaleString()
+    }
+})
+
+const hasMessages = computed(() => messages.value && messages.value.length > 0)
+
+// ============================================================
+// ON MOUNT
+// ============================================================
+
 onMounted(() => {
     loadPreferredModel()
+    // Appliquer le theme au chargement
+    if (darkMode.value) {
+        document.documentElement.classList.add('dark')
+    } else {
+        document.documentElement.classList.remove('dark')
+    }
+    document.addEventListener('keydown', handleKeydown)
 })
 </script>
 
 <template>
-<div class="flex h-screen bg-gray-50">
+<div :class="['flex h-screen', darkMode ? 'dark' : '']">
+    <div class="flex h-screen w-full bg-gray-50 dark:bg-gray-900">
 
-    <!-- SIDEBAR -->
-    <aside class="w-80 bg-white border-r border-gray-200 flex flex-col">
-        <div class="p-4 border-b border-gray-200">
+    <!-- ============================================================
+    SIDEBAR
+    ============================================================ -->
+    <aside class="w-80 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col flex-shrink-0">
+        <div class="p-4 border-b border-gray-200 dark:border-gray-700">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-lg font-bold text-gray-900 dark:text-white">DesignMentor</span>
+                <button
+                    @click="toggleDarkMode"
+                    class="text-xs text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 flex items-center gap-1"
+                >
+                    <span>Theme</span>
+                    <span>{{ darkMode ? '🌙' : '☀️' }}</span>
+                </button>
+            </div>
+            
             <button
                 @click="newConversation"
-                class="w-full bg-gray-900 text-white px-4 py-2.5 rounded-lg hover:bg-gray-800 transition-all duration-200 text-sm font-medium"
+                class="w-full bg-gray-900 dark:bg-gray-700 text-white px-4 py-2.5 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-600 transition-all duration-200 text-sm font-medium"
             >
                 + Nouvelle conversation
             </button>
         </div>
 
         <!-- Selection du modele -->
-        <div class="p-4 border-b border-gray-200">
+        <div class="p-4 border-b border-gray-200 dark:border-gray-700">
             <div class="relative">
                 <button
                     @click="toggleModelSelector"
-                    class="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 transition-all duration-200 text-sm"
+                    class="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-all duration-200 text-sm"
                 >
-                    <div class="flex items-center gap-2">
-                        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                        </svg>
-                        <div class="text-left">
-                            <div class="text-gray-700 font-medium">{{ getSelectedModelInfo().name }}</div>
-                            <div class="text-xs text-gray-500">{{ getSelectedModelInfo().provider }}</div>
+                    <div class="flex items-center gap-2 min-w-0">
+                        <div class="text-left truncate">
+                            <div class="text-gray-700 dark:text-gray-200 font-medium truncate text-sm">{{ getSelectedModelInfo().name }}</div>
+                            <div class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ getSelectedModelInfo().provider }}</div>
                         </div>
                     </div>
-                    <svg class="w-4 h-4 text-gray-500 transition-transform" :class="showModelSelector ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg class="w-4 h-4 text-gray-500 transition-transform flex-shrink-0" :class="showModelSelector ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                     </svg>
                 </button>
 
-                <!-- Dropdown modeles -->
-                <div v-if="showModelSelector" class="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20">
+                <div v-if="showModelSelector" class="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-20 max-h-60 overflow-y-auto">
                     <div class="py-1">
                         <button
                             v-for="model in models"
                             :key="model.id"
                             @click="selectModel(model.id)"
-                            class="w-full text-left px-3 py-3 hover:bg-gray-50 transition-all duration-200 border-b border-gray-100 last:border-0"
-                            :class="selectedModel === model.id ? 'bg-gray-50' : ''"
+                            class="w-full text-left px-3 py-3 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 border-b border-gray-100 dark:border-gray-700 last:border-0"
+                            :class="selectedModel === model.id ? 'bg-gray-50 dark:bg-gray-700' : ''"
                         >
                             <div class="flex items-center justify-between">
-                                <div class="flex-1">
-                                    <div class="flex items-center gap-2">
-                                        <span class="text-sm font-medium text-gray-900">{{ model.name }}</span>
-                                        <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">{{ model.provider }}</span>
-                                    </div>
-                                    <div class="text-xs text-gray-500 mt-1">{{ model.description }}</div>
+                                <div class="flex-1 min-w-0">
+                                    <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ model.name }}</span>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate">{{ model.description }}</div>
+                                    <div class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">${{ model.pricePer1k }}/1k tokens</div>
                                 </div>
-                                <div v-if="selectedModel === model.id" class="text-green-600 ml-3">
+                                <div v-if="selectedModel === model.id" class="text-green-600 ml-3 flex-shrink-0">
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
                                     </svg>
@@ -535,15 +665,11 @@ onMounted(() => {
             </div>
         </div>
         
-        <div class="p-4 border-b border-gray-200">
+        <div class="p-4 border-b border-gray-200 dark:border-gray-700">
             <button
                 @click="goToAiSettings"
-                class="w-full bg-gray-100 text-gray-700 px-4 py-2.5 rounded-lg hover:bg-gray-200 transition-all duration-200 text-sm font-medium flex items-center justify-center gap-2"
+                class="w-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 px-4 py-2.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-200 text-sm font-medium flex items-center justify-center gap-2"
             >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                </svg>
                 Instructions IA
             </button>
         </div>
@@ -558,22 +684,15 @@ onMounted(() => {
                     <div
                         @click="switchConversation(c.id)"
                         class="flex items-center justify-between p-3 rounded-lg cursor-pointer transition-all duration-200"
-                        :class="c.id === activeId 
-                            ? 'bg-gray-100' 
-                            : 'hover:bg-gray-50'"
+                        :class="c.id === activeId ? 'bg-gray-100 dark:bg-gray-700 border-l-4 border-gray-900 dark:border-gray-400' : 'hover:bg-gray-50 dark:hover:bg-gray-700'"
                     >
                         <div class="flex-1 min-w-0">
-                            <div class="text-sm font-medium text-gray-900 truncate">
-                                {{ c.title }}
-                            </div>
-                            <div class="text-xs text-gray-500 mt-1">
-                                {{ c.messages?.length ?? 0 }} messages
-                            </div>
+                            <div class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{{ c.title }}</div>
+                            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">{{ c.messages?.length || 0 }} messages</div>
                         </div>
-                        
                         <button
                             @click="confirmDelete(c.id, $event)"
-                            class="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 rounded hover:bg-gray-200"
+                            class="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 flex-shrink-0"
                             title="Supprimer"
                         >
                             <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -584,54 +703,94 @@ onMounted(() => {
                 </div>
             </div>
         </div>
+        
+        <div class="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+            <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+                <span>{{ sessionStats.messagesSent }} messages</span>
+                <span>{{ sessionStats.totalTokens.toLocaleString() }} tokens</span>
+                <span>{{ formattedStats.cost }}</span>
+            </div>
+        </div>
     </aside>
 
-    <!-- MAIN CHAT AREA -->
-    <main class="flex-1 flex flex-col bg-gray-50">
+ <!-- ============================================================
+    MAIN CHAT AREA
+    ============================================================ -->
+    <main class="flex-1 flex flex-col bg-gray-50 dark:bg-gray-900 min-w-0">
 
         <!-- Chat Header -->
-        <div class="bg-white border-b border-gray-200 px-6 py-4">
+        <div class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex-shrink-0">
             <div class="flex items-center justify-between">
-                <h2 class="text-lg font-medium text-gray-900">
-                    {{ activeConversation?.title || 'Chat' }}
-                </h2>
-                <div class="flex items-center gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                    <h2 class="text-lg font-medium text-gray-900 dark:text-gray-100 truncate">
+                        {{ activeConversation?.title || 'Chat' }}
+                    </h2>
+                    <button
+                        @click="toggleThinking"
+                        class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 flex-shrink-0"
+                        :class="showThinking ? 'text-gray-900 dark:text-gray-100 font-medium' : ''"
+                    >
+                        Thinking {{ showThinking ? '✓' : '' }}
+                    </button>
+                    <button
+                        @click="showExportModal = true"
+                        class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 flex-shrink-0"
+                    >
+                        Export
+                    </button>
+                </div>
+                <div class="flex items-center gap-3 flex-shrink-0">
                     <button
                         @click="toggleCommands"
-                        class="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                        class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                         title="Voir les commandes"
                     >
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                        </svg>
                         Commandes
                     </button>
-                    <div class="text-sm text-gray-500">
-                        {{ messages.length }} messages
-                    </div>
+                    <div class="text-sm text-gray-500 dark:text-gray-400">{{ messages.length }} messages</div>
                 </div>
             </div>
         </div>
 
-        <!-- Messages Container -->
-        <div
-            id="chat-box"
-            class="flex-1 overflow-y-auto p-6"
-        >
-            <div v-if="!activeConversation" class="flex items-center justify-center h-full">
-                <div class="text-center">
-                    <p class="text-gray-500">Cree une conversation</p>
-                </div>
-            </div>
+       <!-- Messages Container -->
+<div id="chat-box" class="flex-1 overflow-y-auto p-6">
 
-            <div v-else-if="messages.length === 0 && !isStreaming" class="flex items-center justify-center h-full">
-                <div class="text-center">
-                    <p class="text-gray-500">Envoie un message pour commencer</p>
-                    <p class="text-xs text-gray-400 mt-2">Modele actuel: {{ getSelectedModelInfo().name }} ({{ getSelectedModelInfo().provider }})</p>
-                    <p class="text-xs text-gray-400">Astuce: utilise /help pour voir les commandes</p>
-                </div>
-            </div>
+    <!-- Message d'accueil minimaliste en haut -->
+    <div v-if="!hasMessages && !isStreaming && activeConversation" class="text-center py-2">
+        <p class="text-sm text-gray-400 dark:text-gray-500">
+            Conseils en typographie, couleurs, mise en page, accessibilite et plus encore. Envoie un message pour lancer la conversation.
+        </p>
+    </div>
 
+    <!-- Pas de conversation active -->
+    <div v-if="!activeConversation" class="flex items-center justify-center h-full">
+        <div class="text-center">
+            <p class="text-gray-500 dark:text-gray-400">Cree une conversation</p>
+            <p class="text-xs text-gray-400 dark:text-gray-500 mt-2">Ctrl+N | Ctrl+Shift+D</p>
+        </div>
+    </div>
+
+    <!-- Message d'accueil personnalisé DesignMentor (centré) -->
+    <div v-else-if="!hasMessages && !isStreaming && !isConnecting" class="flex items-center justify-center h-full">
+        <div class="text-center max-w-md">
+            <div class="text-6xl mb-4">🎨</div>
+            <p class="text-gray-500 dark:text-gray-400 text-lg font-medium">DesignMentor</p>
+            <p class="text-sm text-gray-400 dark:text-gray-500 mt-2">Ton assistant design UI/UX</p>
+            <div class="mt-4 flex flex-wrap gap-2 justify-center">
+                <button
+                    v-for="suggestion in quickSuggestions.slice(0, 3)"
+                    :key="suggestion"
+                    @click="useSuggestion(suggestion)"
+                    class="px-3 py-1.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full text-xs hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-200"
+                >
+                    {{ suggestion.substring(0, 30) }}...
+                </button>
+            </div>
+            <p class="text-xs text-gray-400 dark:text-gray-500 mt-4">Modele: {{ getSelectedModelInfo().name }}</p>
+        </div>
+    </div>
+
+            <!-- Messages et streaming -->
             <div v-else class="space-y-4">
                 <!-- Messages historiques -->
                 <div 
@@ -641,70 +800,87 @@ onMounted(() => {
                 >
                     <div :class="m.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
                         <div class="max-w-xl">
-                            <div class="text-xs text-gray-500 mb-1 px-2">
+                            <div class="text-xs text-gray-500 dark:text-gray-400 mb-1 px-2">
                                 {{ m.role === 'user' ? 'Vous' : (getMessageModelName(m) || getSelectedModelInfo().name) }}
                             </div>
                             <div
                                 class="px-4 py-2 rounded-lg whitespace-pre-wrap text-sm"
                                 :class="m.role === 'user'
-                                    ? 'bg-gray-900 text-white'
-                                    : 'bg-white text-gray-900 border border-gray-200'"
+                                    ? 'bg-gray-900 text-white dark:bg-gray-700 dark:text-white'
+                                    : 'bg-white text-gray-900 border border-gray-200 dark:bg-gray-800 dark:text-gray-100 dark:border-gray-700'"
                             >
                                 <span v-if="m.role === 'user' && isCommand(m.content)" class="text-blue-400 font-mono text-xs">
                                     {{ getCommandName(m.content) }}
                                 </span>
                                 <MarkdownRenderer :content="m.content" />
+                                <div v-if="m.reasoning && showThinking" class="mt-2 p-2 bg-gray-50 dark:bg-gray-700 rounded text-xs text-gray-600 dark:text-gray-300">
+                                    <span class="font-medium">Reflexion:</span>
+                                    <pre class="whitespace-pre-wrap font-sans mt-1">{{ m.reasoning }}</pre>
+                                </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- === INDICATEUR "L'IA reflechit..." QUI APPARAIT IMMEDIATEMENT === -->
+                <div v-if="isConnecting && !streamedContent && !streamedReasoning" class="flex justify-start animate-message-in">
+                    <div class="max-w-xl">
+                        <div class="text-xs text-gray-500 dark:text-gray-400 mb-1 px-2">
+                            {{ getSelectedModelInfo().name }}
+                        </div>
+                        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-4 py-2 rounded-lg whitespace-pre-wrap text-sm text-gray-500 dark:text-gray-400">
+                            <span class="flex items-center gap-2">
+                                <span class="animate-pulse">●</span>
+                                <span class="animate-pulse" style="animation-delay: 0.2s">●</span>
+                                <span class="animate-pulse" style="animation-delay: 0.4s">●</span>
+                                <span>L'IA reflechit...</span>
+                            </span>
                         </div>
                     </div>
                 </div>
 
                 <!-- Stream en cours -->
-                <div v-if="isStreaming" class="flex justify-start animate-message-in">
+                <div v-if="isStreaming && (streamedContent || streamedReasoning)" class="flex justify-start animate-message-in">
                     <div class="max-w-xl">
-                        <div class="text-xs text-gray-500 mb-1 px-2">
+                        <div class="text-xs text-gray-500 dark:text-gray-400 mb-1 px-2">
                             {{ getSelectedModelInfo().name }}
                         </div>
-                        <div class="bg-white text-gray-900 border border-gray-200 px-4 py-2 rounded-lg whitespace-pre-wrap text-sm">
-                            <!-- Affichage du reasoning (optionnel) -->
-                            <div v-if="hasReasoning" class="mb-2 p-2 bg-gray-50 rounded text-xs text-gray-600 border border-gray-100">
-                                <div class="font-medium text-gray-500 mb-1">🧠 Reasoning:</div>
+                        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-4 py-2 rounded-lg whitespace-pre-wrap text-sm text-gray-900 dark:text-gray-100">
+                            <div v-if="hasReasoning" class="mb-2 p-2 bg-gray-50 dark:bg-gray-700 rounded text-xs text-gray-600 dark:text-gray-300 border border-gray-100 dark:border-gray-600">
+                                <div class="font-medium text-gray-500 dark:text-gray-400 mb-1">Reasoning:</div>
                                 <pre class="whitespace-pre-wrap font-sans">{{ streamedReasoning }}</pre>
                             </div>
-                            <!-- Contenu principal -->
                             <span v-if="streamedContent">
                                 <MarkdownRenderer :content="streamedContent" />
                             </span>
                             <span v-else class="text-gray-400">▌</span>
+                            <span class="inline-block w-0.5 h-4 bg-gray-500 animate-pulse ml-0.5"></span>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div v-if="loading && !isStreaming" class="flex justify-start mt-4 animate-fade-in">
-                <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-sm text-gray-500">
+            <div v-if="loading && !isStreaming && !isConnecting" class="flex justify-start mt-4 animate-fade-in">
+                <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-2 text-sm text-gray-500 dark:text-gray-400">
                     {{ getSelectedModelInfo().name }} reflechit...
                 </div>
             </div>
         </div>
 
         <!-- Input Area -->
-        <div class="bg-white border-t border-gray-200 p-4">
+        <div class="bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 p-4 flex-shrink-0">
             <div class="flex gap-2">
-                <div class="flex-1 relative">
-                    <input
-                        v-model="message"
-                        @keyup.enter="sendMessage"
-                        type="text"
-                        class="w-full px-4 py-2.5 bg-white text-gray-900 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent text-sm placeholder-gray-400"
-                        :disabled="loading || !activeId || isStreaming"
-                        placeholder="Pose une question... ou utilise /help"
-                    />
-                </div>
+                <input
+                    v-model="message"
+                    @keyup.enter="sendMessage"
+                    type="text"
+                    class="flex-1 px-4 py-2.5 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent text-sm placeholder-gray-400 dark:placeholder-gray-500"
+                    :disabled="loading || !activeId || isStreaming || isConnecting"
+                    placeholder="Pose une question... ou utilise /help"
+                />
                 <button
-                    v-if="!isStreaming"
+                    v-if="!isStreaming && !isConnecting"
                     @click="sendMessage"
-                    class="px-5 py-2.5 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+                    class="px-5 py-2.5 bg-gray-900 dark:bg-gray-700 text-white rounded-lg hover:bg-gray-800 dark:hover:bg-gray-600 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex-shrink-0"
                     :disabled="loading || !activeId"
                 >
                     Envoyer
@@ -712,106 +888,136 @@ onMounted(() => {
                 <button
                     v-else
                     @click="cancelStream"
-                    class="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all duration-200 text-sm font-medium"
+                    class="px-5 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all duration-200 text-sm font-medium flex-shrink-0"
                 >
                     Annuler
                 </button>
             </div>
             
             <!-- Commandes Panel -->
-            <div v-if="showCommands" class="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200 animate-fade-in">
-                <div class="text-xs text-gray-600 mb-2">Commandes disponibles:</div>
+            <div v-if="showCommands" class="mt-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 animate-fade-in">
+                <div class="text-xs text-gray-600 dark:text-gray-300 mb-2 font-medium">Commandes disponibles:</div>
                 <div class="grid grid-cols-2 gap-2 text-xs">
-                    <div class="font-mono text-blue-600">/help</div>
-                    <div class="text-gray-600">Afficher l'aide</div>
-                    <div class="font-mono text-blue-600">/commands</div>
-                    <div class="text-gray-600">Lister tes commandes</div>
-                    <div class="font-mono text-blue-600">/debug</div>
-                    <div class="text-gray-600">Analyser du code</div>
-                    <div class="font-mono text-blue-600">/eli5</div>
-                    <div class="text-gray-600">Expliquer simplement</div>
-                    <div class="font-mono text-blue-600">/review</div>
-                    <div class="text-gray-600">Code review</div>
+                    <div class="font-mono text-blue-600 dark:text-blue-400">/help</div>
+                    <div class="text-gray-600 dark:text-gray-300">Afficher l'aide</div>
+                    <div class="font-mono text-blue-600 dark:text-blue-400">/commands</div>
+                    <div class="text-gray-600 dark:text-gray-300">Lister tes commandes</div>
+                    <div class="font-mono text-blue-600 dark:text-blue-400">/debug</div>
+                    <div class="text-gray-600 dark:text-gray-300">Analyser du code</div>
+                    <div class="font-mono text-blue-600 dark:text-blue-400">/eli5</div>
+                    <div class="text-gray-600 dark:text-gray-300">Expliquer simplement</div>
+                    <div class="font-mono text-blue-600 dark:text-blue-400">/review</div>
+                    <div class="text-gray-600 dark:text-gray-300">Code review</div>
                 </div>
-                <div class="mt-2 text-xs text-gray-500">
+                <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
                     Va dans Instructions IA pour creer tes propres commandes
                 </div>
             </div>
         </div>
     </main>
 
-    <!-- DELETE CONFIRMATION MODAL -->
+    <!-- ============================================================
+    MODALS
+    ============================================================ -->
+
+    <!-- Delete -->
     <div v-if="showDeleteModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fade-in">
-        <div class="bg-white rounded-lg p-6 max-w-md w-full mx-4 animate-modal-in">
+        <div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 animate-modal-in">
             <div class="text-center">
-                <h3 class="text-lg font-medium text-gray-900 mb-2">
-                    Supprimer la conversation
-                </h3>
-                <p class="text-sm text-gray-500 mb-6">
-                    Etes-vous sur de vouloir supprimer cette conversation ? Cette action est irreversible.
-                </p>
+                <h3 class="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">Supprimer la conversation</h3>
+                <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">Cette action est irreversible.</p>
                 <div class="flex gap-3">
-                    <button
-                        @click="deleteConversation"
-                        class="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all duration-200 text-sm font-medium"
-                    >
-                        Supprimer
-                    </button>
-                    <button
-                        @click="cancelDelete"
-                        class="flex-1 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-all duration-200 text-sm font-medium"
-                    >
-                        Annuler
-                    </button>
+                    <button @click="deleteConversation" class="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all duration-200 text-sm font-medium">Supprimer</button>
+                    <button @click="cancelDelete" class="flex-1 px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-200 text-sm font-medium">Annuler</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export -->
+    <div v-if="showExportModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fade-in">
+        <div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 animate-modal-in">
+            <div class="text-center">
+                <h3 class="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">Exporter la conversation</h3>
+                <div class="mb-4">
+                    <select v-model="exportFormat" class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                        <option value="md">Markdown (.md)</option>
+                        <option value="txt">Texte (.txt)</option>
+                        <option value="json">JSON (.json)</option>
+                    </select>
+                </div>
+                <div class="mb-4 text-left">
+                    <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                        <input type="checkbox" v-model="exportOptions.includeMetadata" /> Metadonnees
+                    </label>
+                    <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                        <input type="checkbox" v-model="exportOptions.includeReasoning" /> Reflexions
+                    </label>
+                    <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                        <input type="checkbox" v-model="exportOptions.includeStats" /> Statistiques
+                    </label>
+                </div>
+                <div class="flex gap-3">
+                    <button @click="exportConversation" class="flex-1 px-4 py-2 bg-gray-900 dark:bg-gray-700 text-white rounded-lg hover:bg-gray-800 dark:hover:bg-gray-600 transition-all duration-200 text-sm font-medium">Exporter</button>
+                    <button @click="showExportModal = false" class="flex-1 px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-200 text-sm font-medium">Annuler</button>
                 </div>
             </div>
         </div>
     </div>
 
 </div>
+</div>
 </template>
 
 <style scoped>
 @keyframes messageIn {
-    from {
-        opacity: 0;
-        transform: translateY(10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes fadeIn {
-    from {
-        opacity: 0;
-    }
-    to {
-        opacity: 1;
-    }
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
 @keyframes modalIn {
-    from {
-        opacity: 0;
-        transform: scale(0.95);
-    }
-    to {
-        opacity: 1;
-        transform: scale(1);
-    }
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
 }
 
-.animate-message-in {
-    animation: messageIn 0.2s ease-out;
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
 }
 
-.animate-fade-in {
-    animation: fadeIn 0.2s ease-out;
+.animate-message-in { animation: messageIn 0.2s ease-out; }
+.animate-fade-in { animation: fadeIn 0.2s ease-out; }
+.animate-modal-in { animation: modalIn 0.2s ease-out; }
+.animate-pulse { animation: pulse 1.2s ease-in-out infinite; }
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
 }
 
-.animate-modal-in {
-    animation: modalIn 0.2s ease-out;
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+    background: #4b5563;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+    background: #6b7280;
 }
 </style>
