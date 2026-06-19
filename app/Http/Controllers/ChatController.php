@@ -68,163 +68,187 @@ class ChatController extends Controller
         ]);
     }
 
-    /**
-     * Envoyer message + OpenRouter avec instructions personnalisees
-     */
-    public function send(Request $request)
-    {
-        $request->validate([
-            'message' => ['required', 'string'],
-            'conversation_id' => ['required', 'integer'],
-            'model' => ['nullable', 'string'],
-            'stream' => ['nullable', 'boolean'],
-        ]);
+   /**
+ * Envoyer message + OpenRouter avec instructions personnalisees
+ */
+public function send(Request $request)
+{
+    $request->validate([
+        'message' => ['required', 'string'],
+        'conversation_id' => ['required', 'integer'],
+        'model' => ['nullable', 'string'],
+        'stream' => ['nullable', 'boolean'],
+    ]);
 
-        $conversation = Conversation::where('id', $request->conversation_id)
-            ->where('user_id', Auth::id())
-            ->first();
+    $conversation = Conversation::where('id', $request->conversation_id)
+        ->where('user_id', Auth::id())
+        ->first();
 
-        if (! $conversation) {
-            return response()->json([
-                'message' => 'Conversation introuvable',
-            ], 404);
-        }
+    if (! $conversation) {
+        return response()->json([
+            'message' => 'Conversation introuvable',
+        ], 404);
+    }
 
-        $user = Auth::user();
-        $originalMessage = $request->message;
-        $messageText = $originalMessage;
+    $user = Auth::user();
+    $originalMessage = $request->message;
+    $messageText = $originalMessage;
 
-        // Recuperer le modele prefere de l'utilisateur ou celui passe dans la requete
-        $model = $request->input('model', $user->preferred_model ?? 'openai/gpt-4o-mini');
-        $useStream = $request->input('stream', false);
+    $model = $request->input('model', $user->preferred_model ?? 'openai/gpt-4o-mini');
+    $useStream = $request->input('stream', false);
+    $userCommands = $this->decodeCommands($user->ai_commands);
 
-        // Decoder les commandes depuis JSON
-        $userCommands = $this->decodeCommands($user->ai_commands);
-
-        // 1. Gestion des commandes personnalisees
-        if (str_starts_with($messageText, '/')) {
-            $parts = explode(' ', $messageText, 2);
-            $cmdName = $parts[0];
-            $cmdArgs = $parts[1] ?? '';
-            
-            if (isset($userCommands[$cmdName])) {
-                $commandInstruction = $userCommands[$cmdName];
-                
-                if (! empty($cmdArgs)) {
-                    $messageText = $commandInstruction . "\n\n" . $cmdArgs;
-                } else {
-                    $messageText = $commandInstruction;
-                }
+    // 1. Gestion des commandes personnalisees
+    if (str_starts_with($messageText, '/')) {
+        $parts = explode(' ', $messageText, 2);
+        $cmdName = $parts[0];
+        $cmdArgs = $parts[1] ?? '';
+        
+        if (isset($userCommands[$cmdName])) {
+            $commandInstruction = $userCommands[$cmdName];
+            if (! empty($cmdArgs)) {
+                $messageText = $commandInstruction . "\n\n" . $cmdArgs;
+            } else {
+                $messageText = $commandInstruction;
             }
         }
+    }
 
-        // 2. Commandes natives
-        if ($messageText === '/help' || $messageText === '/aide') {
-            $helpMessage = $this->getHelpMessage($userCommands);
-            
-            Message::create([
-                'conversation_id' => $conversation->id,
-                'role' => 'assistant',
-                'content' => $helpMessage,
-                'model' => $model,
-            ]);
-            
-            return response()->json([
-                'answer' => $helpMessage,
-                'conversation_title' => $conversation->title,
-            ]);
-        }
-        
-        if ($messageText === '/commands') {
-            $commandsMessage = $this->getCommandsList($userCommands);
-            
-            Message::create([
-                'conversation_id' => $conversation->id,
-                'role' => 'assistant',
-                'content' => $commandsMessage,
-                'model' => $model,
-            ]);
-            
-            return response()->json([
-                'answer' => $commandsMessage,
-                'conversation_title' => $conversation->title,
-            ]);
-        }
+    // 2. Commandes natives - Utiliser trim()
+    $trimmedMessage = trim($originalMessage);
 
-        // 3. Save user message
+    if ($trimmedMessage === '/help' || $trimmedMessage === '/aide') {
+        // Sauvegarder le message utilisateur
         Message::create([
             'conversation_id' => $conversation->id,
             'role' => 'user',
-            'content' => $messageText,
+            'content' => $originalMessage,
             'model' => null,
         ]);
-
-        // 4. Auto title
+        
+        $helpMessage = $this->getHelpMessage($userCommands);
+        
+        Message::create([
+            'conversation_id' => $conversation->id,
+            'role' => 'assistant',
+            'content' => $helpMessage,
+            'model' => $model,
+        ]);
+        
         if ($conversation->title === 'Nouvelle conversation') {
             $title = $this->generateAiTitle($originalMessage);
             $conversation->update(['title' => $title]);
             $conversation->refresh();
         }
-
-        // 5. Build history
-        $messages = Message::where('conversation_id', $conversation->id)
-            ->orderBy('id')
-            ->get()
-            ->map(fn ($message) => [
-                'role' => $message->role,
-                'content' => $message->content,
-            ])
-            ->toArray();
-
-        // 6. Injection du profil utilisateur (CORRIGE)
-        $systemPrompt = $this->buildSystemPrompt($user, $userCommands);
         
-        array_unshift($messages, [
-            'role' => 'system',
-            'content' => $systemPrompt
-        ]);
-
-        // 7. Si streaming demandé, retourner une réponse streamée
-        if ($useStream) {
-            return $this->streamResponse($model, $messages);
-        }
-
-        // 8. OpenRouter request sans streaming
-        $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . env('OPENROUTER_API_KEY'),
-            'Content-Type' => 'application/json',
-            'HTTP-Referer' => config('app.url'),
-            'X-Title' => config('app.name'),
-        ])->post('https://openrouter.ai/api/v1/chat/completions', [
-            'model' => $model,
-            'messages' => $messages,
-            'temperature' => 0.7,
-        ]);
-
-        // 9. Handle API error
-        if ($response->failed()) {
-            return response()->json([
-                'message' => 'Erreur OpenRouter',
-                'error' => $response->body(),
-            ], 500);
-        }
-
-        $answer = $response->json('choices.0.message.content')
-            ?? 'Desole, je n\'ai pas pu generer une reponse.';
-
-        // 10. Save assistant message avec le modele utilise
-        Message::create([
-            'conversation_id' => $conversation->id,
-            'role' => 'assistant',
-            'content' => $answer,
-            'model' => $model,
-        ]);
-
         return response()->json([
-            'answer' => $answer,
+            'answer' => $helpMessage,
             'conversation_title' => $conversation->title,
         ]);
     }
+    
+    if ($trimmedMessage === '/commands') {
+        // Sauvegarder le message utilisateur
+        Message::create([
+            'conversation_id' => $conversation->id,
+            'role' => 'user',
+            'content' => $originalMessage,
+            'model' => null,
+        ]);
+        
+        $commandsMessage = $this->getCommandsList($userCommands);
+        
+        Message::create([
+            'conversation_id' => $conversation->id,
+            'role' => 'assistant',
+            'content' => $commandsMessage,
+            'model' => $model,
+        ]);
+        
+        if ($conversation->title === 'Nouvelle conversation') {
+            $title = $this->generateAiTitle($originalMessage);
+            $conversation->update(['title' => $title]);
+            $conversation->refresh();
+        }
+        
+        return response()->json([
+            'answer' => $commandsMessage,
+            'conversation_title' => $conversation->title,
+        ]);
+    }
+
+    // 3. Save user message
+    Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => 'user',
+        'content' => $messageText,
+        'model' => null,
+    ]);
+
+    // 4. Auto title
+    if ($conversation->title === 'Nouvelle conversation') {
+        $title = $this->generateAiTitle($originalMessage);
+        $conversation->update(['title' => $title]);
+        $conversation->refresh();
+    }
+
+    // 5. Build history
+    $messages = Message::where('conversation_id', $conversation->id)
+        ->orderBy('id')
+        ->get()
+        ->map(fn ($message) => [
+            'role' => $message->role,
+            'content' => $message->content,
+        ])
+        ->toArray();
+
+    // 6. Injection du profil utilisateur
+    $systemPrompt = $this->buildSystemPrompt($user, $userCommands);
+    array_unshift($messages, [
+        'role' => 'system',
+        'content' => $systemPrompt
+    ]);
+
+    // 7. Si streaming demandé
+    if ($useStream) {
+        return $this->streamResponse($model, $messages);
+    }
+
+    // 8. OpenRouter request
+    $response = Http::withHeaders([
+        'Authorization' => 'Bearer ' . env('OPENROUTER_API_KEY'),
+        'Content-Type' => 'application/json',
+        'HTTP-Referer' => config('app.url'),
+        'X-Title' => config('app.name'),
+    ])->post('https://openrouter.ai/api/v1/chat/completions', [
+        'model' => $model,
+        'messages' => $messages,
+        'temperature' => 0.7,
+    ]);
+
+    if ($response->failed()) {
+        return response()->json([
+            'message' => 'Erreur OpenRouter',
+            'error' => $response->body(),
+        ], 500);
+    }
+
+    $answer = $response->json('choices.0.message.content')
+        ?? 'Desole, je n\'ai pas pu generer une reponse.';
+
+    // 10. Save assistant message
+    Message::create([
+        'conversation_id' => $conversation->id,
+        'role' => 'assistant',
+        'content' => $answer,
+        'model' => $model,
+    ]);
+
+    return response()->json([
+        'answer' => $answer,
+        'conversation_title' => $conversation->title,
+    ]);
+}
 
     /**
      * Decoder les commandes depuis JSON ou string
@@ -250,31 +274,38 @@ class ChatController extends Controller
     }
 
     /**
-     * Obtenir le message d'aide
-     */
-    private function getHelpMessage(array $userCommands): string
-    {
-        $message = "Commandes disponibles :\n\n";
-        $message .= "Commandes natives :\n";
-        $message .= "- /help ou /aide : Affiche cette aide\n";
-        $message .= "- /commands : Liste tes commandes personnalisees\n\n";
-        
-        if (!empty($userCommands)) {
-            $message .= "Tes commandes personnalisees :\n";
-            foreach ($userCommands as $cmd => $instruction) {
-                $shortInstruction = substr($instruction, 0, 50);
-                $message .= "- {$cmd} : {$shortInstruction}...\n";
-            }
-        } else {
-            $message .= "Astuce : Va dans Parametres > IA pour creer tes propres commandes !\n";
-            $message .= "Exemple :\n";
-            $message .= "- /debug : Analyse ce code\n";
-            $message .= "- /eli5 : Explique simplement\n";
-            $message .= "- /review : Code review\n";
+ * Obtenir le message d'aide
+ */
+private function getHelpMessage(array $userCommands): string
+{
+    $message = "Commandes DesignMentor disponibles :\n\n";
+    $message .= "Commandes natives :\n";
+    $message .= "- /help ou /aide : Affiche cette aide\n";
+    
+    $message .= "Commandes design recommandees :\n";
+    $message .= "- /ui : Analyse UI et propose des ameliorations\n";
+    $message .= "- /ux : Analyse UX et points de friction\n";
+    $message .= "- /colors : Propose une palette de couleurs\n";
+    $message .= "- /typography : Recommande une hierarchie typographique\n";
+    $message .= "- /critique : Critique constructive de design\n";
+    $message .= "- /grid : Propose une grille de mise en page\n\n";
+    
+    if (!empty($userCommands)) {
+        $message .= "Tes commandes personnalisees :\n";
+        foreach ($userCommands as $cmd => $instruction) {
+            $shortInstruction = substr($instruction, 0, 50);
+            $message .= "- {$cmd} : {$shortInstruction}...\n";
         }
-        
-        return $message;
+    } else {
+        $message .= "Astuce : Va dans Parametres > IA pour creer tes propres commandes !\n";
+        $message .= "Exemple :\n";
+        $message .= "- /debug : Analyse ce code\n";
+        $message .= "- /eli5 : Explique simplement\n";
+        $message .= "- /review : Code review\n";
     }
+    
+    return $message;
+}
 
     /**
      * Obtenir la liste des commandes personnalisees
@@ -295,40 +326,58 @@ class ChatController extends Controller
     }
 
     /**
-     * Construire le system prompt avec le profil utilisateur (CORRIGE)
+     * Construire le system prompt avec le profil utilisateur 
      */
     private function buildSystemPrompt(User $user, array $userCommands): string
-    {
-        // Commencer avec le role de base
-        $systemPrompt = "Tu es un assistant IA utile et precis.\n\n";
-        
-        // Ajouter les commandes personnalisees si elles existent
-        if (!empty($userCommands)) {
-            $systemPrompt .= "=== COMMANDES DISPONIBLES ===\n";
-            foreach ($userCommands as $cmd => $instruction) {
-                $systemPrompt .= "- {$cmd}: {$instruction}\n";
-            }
-            $systemPrompt .= "\n";
+{
+    // Commencer avec le role de base - THEME DESIGNMENTOR
+    $systemPrompt = "Tu es DesignMentor, un assistant expert en design UI/UX et direction artistique. 
+    Tu aides les designers, developpeurs et creatifs a ameliorer leurs projets.
+    
+    TA PERSONNALITE :
+    - Tu es creatif, inspirant et pedagogique
+    - Tu utilises un vocabulaire technique du design (typographie, grille, espacement, contraste, hierarchie, accessibilite)
+    - Tu donnes des conseils concrets et applicables
+    - Tu references des designers et tendances quand pertinent
+    - Tu es encourageant mais honnete dans tes retours
+    - Tu parles francais avec quelques termes techniques en anglais (UI, UX, mockup, prototype, design system)
+    
+    TON ROLE :
+    - Conseiller sur les principes de design UI
+    - Proposer des ameliorations UX
+    - Aider au choix des couleurs, typographies, mises en page
+    - Donner des retours sur des maquettes (si l'utilisateur decrit)
+    - Partager des bonnes pratiques d'accessibilite
+    - Suggerer des outils et ressources design
+    
+    Reponds toujours de maniere structuree, avec des exemples concrets et des justifications claires.\n\n";
+    
+    // Ajouter les commandes personnalisees si elles existent
+    if (!empty($userCommands)) {
+        $systemPrompt .= "=== COMMANDES DISPONIBLES ===\n";
+        foreach ($userCommands as $cmd => $instruction) {
+            $systemPrompt .= "- {$cmd}: {$instruction}\n";
         }
-        
-        // Ajouter le profil utilisateur (AI ABOUT)
-        if ($user->ai_about && !empty(trim($user->ai_about))) {
-            $systemPrompt .= "=== PROFIL DE L'UTILISATEUR ===\n";
-            $systemPrompt .= $user->ai_about . "\n\n";
-        }
-        
-        // Ajouter le comportement attendu (AI BEHAVIOR)
-        if ($user->ai_behavior && !empty(trim($user->ai_behavior))) {
-            $systemPrompt .= "=== COMPORTEMENT ATTENDU ===\n";
-            $systemPrompt .= $user->ai_behavior . "\n\n";
-        }
-        
-        // Instruction finale
-        $systemPrompt .= "Adapte tes reponses en fonction de ces informations. Sois utile et precis.";
-        
-        return $systemPrompt;
+        $systemPrompt .= "\n";
     }
-
+    
+    // Ajouter le profil utilisateur (AI ABOUT)
+    if ($user->ai_about && !empty(trim($user->ai_about))) {
+        $systemPrompt .= "=== PROFIL DE L'UTILISATEUR ===\n";
+        $systemPrompt .= $user->ai_about . "\n\n";
+    }
+    
+    // Ajouter le comportement attendu (AI BEHAVIOR)
+    if ($user->ai_behavior && !empty(trim($user->ai_behavior))) {
+        $systemPrompt .= "=== COMPORTEMENT ATTENDU ===\n";
+        $systemPrompt .= $user->ai_behavior . "\n\n";
+    }
+    
+    // Instruction finale
+    $systemPrompt .= "Adapte tes reponses en fonction de ces informations. Sois utile et precis.";
+    
+    return $systemPrompt;
+}
     /**
      * Generer un titre de conversation avec l'IA
      */

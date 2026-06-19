@@ -705,12 +705,19 @@ onMounted(() => {
         </div>
         
         <div class="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-            <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                <span>{{ sessionStats.messagesSent }} messages</span>
-                <span>{{ sessionStats.totalTokens.toLocaleString() }} tokens</span>
-                <span>{{ formattedStats.cost }}</span>
-            </div>
+    <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+        <div class="flex items-center gap-1.5">
+            <span class="relative flex h-2 w-2">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+            </span>
+            <span>Session</span>
         </div>
+        <span>{{ sessionStats.messagesSent }} entry</span>
+        <span>{{ sessionStats.totalTokens.toLocaleString() }} token</span>
+        <span>{{ formattedStats.cost }}</span>
+    </div>
+</div>
     </aside>
 
  <!-- ============================================================
@@ -755,12 +762,6 @@ onMounted(() => {
        <!-- Messages Container -->
 <div id="chat-box" class="flex-1 overflow-y-auto p-6">
 
-    <!-- Message d'accueil minimaliste en haut -->
-    <div v-if="!hasMessages && !isStreaming && activeConversation" class="text-center py-2">
-        <p class="text-sm text-gray-400 dark:text-gray-500">
-            Conseils en typographie, couleurs, mise en page, accessibilite et plus encore. Envoie un message pour lancer la conversation.
-        </p>
-    </div>
 
     <!-- Pas de conversation active -->
     <div v-if="!activeConversation" class="flex items-center justify-center h-full">
@@ -775,7 +776,10 @@ onMounted(() => {
         <div class="text-center max-w-md">
             <div class="text-6xl mb-4">🎨</div>
             <p class="text-gray-500 dark:text-gray-400 text-lg font-medium">DesignMentor</p>
-            <p class="text-sm text-gray-400 dark:text-gray-500 mt-2">Ton assistant design UI/UX</p>
+            <p class="text-sm text-gray-400 dark:text-gray-500 mt-2">
+    Ton assistant design UI/UX <br>
+    <span class="italic text-gray-400 dark:text-gray-500">Conseils en typographie, couleurs, mise en page, accessibilite</span>
+</p>
             <div class="mt-4 flex flex-wrap gap-2 justify-center">
                 <button
                     v-for="suggestion in quickSuggestions.slice(0, 3)"
@@ -786,7 +790,12 @@ onMounted(() => {
                     {{ suggestion.substring(0, 30) }}...
                 </button>
             </div>
-            <p class="text-xs text-gray-400 dark:text-gray-500 mt-4">Modele: {{ getSelectedModelInfo().name }}</p>
+            <br>
+            <div class="mt-4 w-full max-w-xs mx-auto px-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+    <p class="text-xs text-gray-400 dark:text-gray-500 text-center">
+        Modele: {{ getSelectedModelInfo().name }}
+    </p>
+</div>
         </div>
     </div>
 
@@ -895,24 +904,38 @@ onMounted(() => {
             </div>
             
             <!-- Commandes Panel -->
-            <div v-if="showCommands" class="mt-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 animate-fade-in">
-                <div class="text-xs text-gray-600 dark:text-gray-300 mb-2 font-medium">Commandes disponibles:</div>
-                <div class="grid grid-cols-2 gap-2 text-xs">
-                    <div class="font-mono text-blue-600 dark:text-blue-400">/help</div>
-                    <div class="text-gray-600 dark:text-gray-300">Afficher l'aide</div>
-                    <div class="font-mono text-blue-600 dark:text-blue-400">/commands</div>
-                    <div class="text-gray-600 dark:text-gray-300">Lister tes commandes</div>
-                    <div class="font-mono text-blue-600 dark:text-blue-400">/debug</div>
-                    <div class="text-gray-600 dark:text-gray-300">Analyser du code</div>
-                    <div class="font-mono text-blue-600 dark:text-blue-400">/eli5</div>
-                    <div class="text-gray-600 dark:text-gray-300">Expliquer simplement</div>
-                    <div class="font-mono text-blue-600 dark:text-blue-400">/review</div>
-                    <div class="text-gray-600 dark:text-gray-300">Code review</div>
-                </div>
-                <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                    Va dans Instructions IA pour creer tes propres commandes
-                </div>
-            </div>
+<div v-if="showCommands" class="mt-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 animate-fade-in">
+    <div class="text-xs text-gray-600 dark:text-gray-300 mb-2 font-medium">Commandes DesignMentor :</div>
+    <div class="grid grid-cols-2 gap-1 text-xs">
+        <div class="font-mono text-blue-600 dark:text-blue-400">/help</div>
+        <div class="text-gray-600 dark:text-gray-300">Afficher l'aide</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/ui</div>
+        <div class="text-gray-600 dark:text-gray-300">Analyse UI</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/ux</div>
+        <div class="text-gray-600 dark:text-gray-300">Analyse UX</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/colors</div>
+        <div class="text-gray-600 dark:text-gray-300">Palette de couleurs</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/typography</div>
+        <div class="text-gray-600 dark:text-gray-300">Typographie</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/critique</div>
+        <div class="text-gray-600 dark:text-gray-300">Critique design</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/grid</div>
+        <div class="text-gray-600 dark:text-gray-300">Grille de mise en page</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/inspire</div>
+        <div class="text-gray-600 dark:text-gray-300">Inspirations design</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/accessibility</div>
+        <div class="text-gray-600 dark:text-gray-300">Accessibilite</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/debug</div>
+        <div class="text-gray-600 dark:text-gray-300">Analyser du code</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/eli5</div>
+        <div class="text-gray-600 dark:text-gray-300">Expliquer simplement</div>
+        <div class="font-mono text-blue-600 dark:text-blue-400">/review</div>
+        <div class="text-gray-600 dark:text-gray-300">Code review</div>
+    </div>
+    <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+        Va dans Instructions IA pour creer tes propres commandes
+    </div>
+</div>
         </div>
     </main>
 
