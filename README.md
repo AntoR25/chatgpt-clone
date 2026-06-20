@@ -8,7 +8,7 @@ bash
 
 # Cloner le projet
 git clone https://github.com/ton-repo/designmentor.git
-cd designmentor
+cd chatgpt-clone
 
 # Dépendances PHP
 composer install
