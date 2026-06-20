@@ -1,35 +1,9 @@
-Structure du projet
+Structure :
 
-designmentor/
-├── app/
-│   ├── Http/Controllers/
-│   │   ├── ChatController.php        # Gestion des conversations et messages
-│   │   ├── StreamController.php      # Endpoint de streaming SSE
-│   │   └── UserController.php        # Gestion du profil IA
-│   ├── Models/
-│   │   ├── User.php
-│   │   ├── Conversation.php
-│   │   └── Message.php
-│   └── Services/
-│       └── StreamService.php         # Service de streaming OpenRouter
-│
-├── database/migrations/
-├── resources/js/
-│   ├── pages/
-│   │   ├── Chat.vue
-│   │   └── settings/Ai.vue
-│   ├── components/
-│   │   └── MarkdownRenderer.vue
-│   └── layouts/
-│
-├── routes/web.php
-├── tests/
-├── .env.example
-├── composer.json
-├── package.json
-└── README.md
+<img width="777" height="707" alt="Structures" src="https://github.com/user-attachments/assets/9bf8ab09-f1e5-416b-9218-c478f2bbda85" />
 
-Installation rapide
+
+Installation rapide :
 bash
 
 # Cloner le projet
