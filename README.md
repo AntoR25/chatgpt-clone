@@ -1,32 +1,32 @@
-Structure :
+# Structure :
 
 <img width="777" height="707" alt="Structures" src="https://github.com/user-attachments/assets/9bf8ab09-f1e5-416b-9218-c478f2bbda85" />
 
 
-Installation rapide :
+# Installation rapide :
 bash
 
-# Cloner le projet
+## Cloner le projet
 git clone https://github.com/ton-repo/designmentor.git
 cd chatgpt-clone
 
-# Dépendances PHP
+## Dépendances PHP
 composer install
 
-# Dépendances JS
+## Dépendances JS
 npm install
 
-# Environnement
+## Environnement
 cp .env.example .env
 php artisan key:generate
 
-# Base de données
+## Base de données
 php artisan migrate
 
-# Assets
+## Assets
 npm run build
 
-# Lancer le serveur
+## Lancer le serveur
 php artisan serve
 Variables d'environnement essentielles
 env
@@ -36,3 +36,9 @@ DB_PASSWORD=
 
 OPENROUTER_API_KEY=ta_cle_api_openrouter
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+
+# Vidéo de démo
+
+https://github.com/user-attachments/assets/fe0e84e3-3a18-44ff-8c91-bdf2cc864e39
+
+
